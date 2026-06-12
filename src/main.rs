@@ -1,4 +1,5 @@
 mod loader;
+mod markdown;
 mod model;
 
 fn main() {
