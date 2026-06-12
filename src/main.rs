@@ -65,14 +65,6 @@ fn main() {
         process::exit(2);
     };
 
-    let project = match m1_typecheck::Project::load(&project_path) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("m1-doc: {}: {e}", project_path.display());
-            process::exit(1);
-        }
-    };
-
     let title = args.title.unwrap_or_else(|| {
         project_path
             .parent()
@@ -81,7 +73,13 @@ fn main() {
             .unwrap_or_else(|| "M1 Project".into())
     });
 
-    let model = loader::build_model(&project, title);
+    let model = match loader::load(&project_path, title) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("m1-doc: {}: {e}", project_path.display());
+            process::exit(1);
+        }
+    };
 
     // P1 emits Markdown; --format html|both also emit Markdown for now (HTML
     // render lands in P3). Write each rendered file under --out.

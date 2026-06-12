@@ -30,6 +30,9 @@ fn doc_kind(kind: SymbolKind) -> Option<SymbolDocKind> {
 
 /// Render a `ValueType` as a human-readable label. `ValueType` has no `Display`
 /// impl; this mirrors the string representations used elsewhere in the toolchain.
+/// `Enum(_)` collapses to `"enum"` because the specific enum name comes from
+/// `declared_type` when present — the `ValueType` variant only carries the
+/// resolved kind, not the name the user typed.
 fn value_type_label(vt: m1_typecheck::ValueType) -> &'static str {
     use m1_typecheck::ValueType;
     match vt {
@@ -44,11 +47,12 @@ fn value_type_label(vt: m1_typecheck::ValueType) -> &'static str {
 }
 
 /// The storage type label: the declared type verbatim when present, else the
-/// resolved value type's display string.
-fn type_label(sym: &Symbol) -> Option<String> {
+/// resolved value type's display string. Always returns a non-empty string —
+/// every symbol has at least a resolved `ValueType`.
+fn type_label(sym: &Symbol) -> String {
     sym.declared_type
         .clone()
-        .or_else(|| Some(value_type_label(sym.value_type).to_string()))
+        .unwrap_or_else(|| value_type_label(sym.value_type).to_string())
 }
 
 fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
@@ -64,6 +68,17 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
         unit,
         security: sym.security.clone(),
     }
+}
+
+/// Load a project file and build its documentation model. Keeps all
+/// m1-typecheck I/O inside the loader so the rest of the crate stays
+/// toolchain-agnostic.
+pub fn load(
+    project_path: &std::path::Path,
+    title: String,
+) -> Result<DocModel, m1_typecheck::project::LoadError> {
+    let project = m1_typecheck::Project::load(project_path)?;
+    Ok(build_model(&project, title))
 }
 
 /// Build the documentation model from a project, with `title` for the index.
@@ -104,6 +119,21 @@ mod tests {
   </List></ComponentStream>
  </Project>
 </MoTeCM1BuildSession>"#;
+
+    #[test]
+    fn top_level_group_single_segment() {
+        assert_eq!(top_level_group("Root"), "Root");
+    }
+
+    #[test]
+    fn top_level_group_two_segments() {
+        assert_eq!(top_level_group("Root.Engine"), "Root.Engine");
+    }
+
+    #[test]
+    fn top_level_group_deep_path() {
+        assert_eq!(top_level_group("Root.Engine.Gain.Value"), "Root.Engine");
+    }
 
     #[test]
     fn groups_channels_and_params_under_their_top_level_group() {

@@ -1,6 +1,32 @@
 use assert_cmd::Command;
 
 #[test]
+fn nonexistent_project_fails_with_path_in_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("docs");
+    let nonexistent = "/nonexistent/Project.m1prj";
+
+    let assert = Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            nonexistent,
+            "--out",
+            out.to_str().unwrap(),
+            "--format",
+            "markdown",
+        ])
+        .assert()
+        .failure();
+
+    let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
+    assert!(
+        stderr.contains(nonexistent),
+        "expected path in stderr; got:\n{stderr}"
+    );
+}
+
+#[test]
 fn generates_markdown_for_a_project() {
     let dir = tempfile::tempdir().unwrap();
     let prj = dir.path().join("Project.m1prj");

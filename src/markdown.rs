@@ -6,7 +6,9 @@ use std::fmt::Write as _;
 
 /// A rendered file: a project-relative path and its Markdown body.
 pub struct RenderedFile {
+    /// Project-relative path, e.g. `index.md` or `Root.Engine.md`.
     pub path: String,
+    /// Full Markdown content ready to write to disk.
     pub body: String,
 }
 
@@ -35,7 +37,7 @@ fn render_group(group: &GroupDoc) -> String {
                 out,
                 "| `{}` | {} | {} | {} |",
                 s.path,
-                s.type_label.as_deref().unwrap_or("—"),
+                s.type_label,
                 s.unit.as_deref().unwrap_or("—"),
                 s.security.as_deref().unwrap_or("—"),
             );
@@ -84,7 +86,7 @@ mod tests {
                 symbols: vec![SymbolDoc {
                     path: "Root.Engine.Speed".into(),
                     kind: SymbolDocKind::Channel,
-                    type_label: Some("f32".into()),
+                    type_label: "f32".into(),
                     unit: Some("rpm".into()),
                     security: None,
                 }],

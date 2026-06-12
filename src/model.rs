@@ -7,8 +7,9 @@ pub struct SymbolDoc {
     pub path: String,
     pub kind: SymbolDocKind,
     /// The storage type to show: `declared_type` verbatim when present, else the
-    /// resolved value type's display string, else `None`.
-    pub type_label: Option<String>,
+    /// resolved value type's display string. Always present — every symbol has at
+    /// least a resolved `ValueType`.
+    pub type_label: String,
     pub unit: Option<String>,
     pub security: Option<String>,
 }

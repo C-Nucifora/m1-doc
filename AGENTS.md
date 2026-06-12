@@ -4,7 +4,7 @@ Documentation generator for MoTeC M1 projects.
 
 ## Architecture
 
-`loader` (m1-typecheck `Project` → `SymbolTable`, m1-core annotations) builds a
+`loader` (m1-typecheck `Project` → `SymbolTable`, m1-core annotations (P2)) builds a
 plain `DocModel` (the single source of truth). `markdown` renders it to files —
 the canonical output. `html` (P3) renders the Markdown via pulldown-cmark.
 Nothing downstream of the loader touches toolchain types.

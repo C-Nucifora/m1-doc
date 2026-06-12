@@ -7,7 +7,7 @@ description = "Documentation generator for MoTeC M1 projects"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-m1-core = { git = "https://github.com/C-Nucifora/m1-core.git", tag = "v0.10.0" }
+m1-core = { git = "https://github.com/C-Nucifora/m1-core.git", tag = "v0.10.0" } # used from P2 for @m1: annotations
 m1-typecheck = { git = "https://github.com/C-Nucifora/m1-typecheck.git", tag = "v0.35.0" }
 
 [dev-dependencies]
