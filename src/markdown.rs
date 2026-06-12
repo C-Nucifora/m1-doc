@@ -110,7 +110,8 @@ mod tests {
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
         assert!(page.body.contains("## Channels"), "got:\n{}", page.body);
         assert!(
-            page.body.contains("| `Root.Engine.Speed` | f32 | rpm | — |"),
+            page.body
+                .contains("| `Root.Engine.Speed` | f32 | rpm | — |"),
             "got:\n{}",
             page.body
         );

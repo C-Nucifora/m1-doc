@@ -3,8 +3,8 @@
 //! (`Root.Engine` for `Root.Engine.Speed`).
 
 use crate::model::{DocModel, GroupDoc, SymbolDoc, SymbolDocKind};
-use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind};
+use m1_typecheck::Project;
 use std::collections::BTreeMap;
 
 /// The top-level group a symbol's docs belong on: the first two dot-segments
@@ -56,10 +56,7 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
     // `<Locale><Default Unit="…">`. `unit` is the stored base unit derived from
     // `Qty` (e.g. `rad/s`). We prefer `display_unit` for documentation because
     // it is what MoTeC Build and the dash display to the user.
-    let unit = sym
-        .display_unit
-        .clone()
-        .or_else(|| sym.unit.clone());
+    let unit = sym.display_unit.clone().or_else(|| sym.unit.clone());
     SymbolDoc {
         path: sym.path.clone(),
         kind,
@@ -77,10 +74,12 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
             continue;
         };
         let group_path = top_level_group(&sym.path);
-        let group = groups.entry(group_path.clone()).or_insert_with(|| GroupDoc {
-            path: group_path,
-            symbols: Vec::new(),
-        });
+        let group = groups
+            .entry(group_path.clone())
+            .or_insert_with(|| GroupDoc {
+                path: group_path,
+                symbols: Vec::new(),
+            });
         group.symbols.push(symbol_doc(sym, kind));
     }
     // Deterministic order: groups by path (BTreeMap), symbols by path within.
@@ -123,8 +122,9 @@ mod tests {
             eng.symbols
         );
         assert!(
-            eng.symbols.iter().any(|s| s.kind == SymbolDocKind::Parameter
-                && s.security.as_deref() == Some("Tune")),
+            eng.symbols.iter().any(
+                |s| s.kind == SymbolDocKind::Parameter && s.security.as_deref() == Some("Tune")
+            ),
             "parameter with security; got {:?}",
             eng.symbols
         );
