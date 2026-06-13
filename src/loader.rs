@@ -45,6 +45,7 @@ fn function_doc(sym: &Symbol) -> FunctionDoc {
     FunctionDoc {
         path: sym.path.clone(),
         inputs,
+        annotations: Vec::new(),
     }
 }
 
