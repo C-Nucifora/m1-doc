@@ -1,3 +1,4 @@
+mod html;
 mod loader;
 mod markdown;
 mod model;
@@ -81,18 +82,41 @@ fn main() {
         }
     };
 
-    // P1 emits Markdown; --format html|both also emit Markdown for now (HTML
-    // render lands in P3). Write each rendered file under --out.
     if let Err(e) = std::fs::create_dir_all(&args.out) {
         eprintln!("m1-doc: {}: {e}", args.out.display());
         process::exit(1);
     }
-    for file in markdown::render(&model) {
-        let path = args.out.join(&file.path);
-        if let Err(e) = std::fs::write(&path, file.body) {
+
+    // Build Markdown files once; HTML renderer consumes them.
+    let md_files = markdown::render(&model);
+
+    /// Write a single [`markdown::RenderedFile`] under `out`, exiting on error.
+    fn write_file(out: &std::path::Path, file: &markdown::RenderedFile) {
+        let path = out.join(&file.path);
+        if let Err(e) = std::fs::write(&path, &file.body) {
             eprintln!("m1-doc: {}: {e}", path.display());
-            process::exit(1);
+            std::process::exit(1);
         }
     }
-    let _ = args.format; // HTML branch arrives in P3.
+
+    match args.format {
+        Format::Markdown => {
+            for f in &md_files {
+                write_file(&args.out, f);
+            }
+        }
+        Format::Html => {
+            for f in &html::render(&md_files, &model) {
+                write_file(&args.out, f);
+            }
+        }
+        Format::Both => {
+            for f in &md_files {
+                write_file(&args.out, f);
+            }
+            for f in &html::render(&md_files, &model) {
+                write_file(&args.out, f);
+            }
+        }
+    }
 }
