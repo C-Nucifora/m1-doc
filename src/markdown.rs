@@ -1,7 +1,7 @@
 //! Renders a [`DocModel`] to Markdown: one file per group plus an `index.md`.
 //! This is the canonical output; the HTML renderer (P3) consumes these files.
 
-use crate::model::{DocModel, GroupDoc, SymbolDoc, SymbolDocKind};
+use crate::model::{DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
 use std::fmt::Write as _;
 
 /// A rendered file: a project-relative path and its Markdown body.
@@ -15,6 +15,21 @@ pub struct RenderedFile {
 /// `Root.Engine` -> `Root.Engine.md` (a flat, link-safe filename).
 fn group_filename(group_path: &str) -> String {
     format!("{group_path}.md")
+}
+
+/// Render one function entry as a `### <path>` subsection with its input list.
+fn render_function(f: &FunctionDoc) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "### {}\n", f.path);
+    if f.inputs.is_empty() {
+        let _ = writeln!(out, "(no inputs)\n");
+    } else {
+        for (name, ty) in &f.inputs {
+            let _ = writeln!(out, "- {name}: {ty}");
+        }
+        out.push('\n');
+    }
+    out
 }
 
 fn render_group(group: &GroupDoc) -> String {
@@ -43,6 +58,12 @@ fn render_group(group: &GroupDoc) -> String {
             );
         }
         out.push('\n');
+    }
+    if !group.functions.is_empty() {
+        let _ = writeln!(out, "## Functions\n");
+        for f in &group.functions {
+            out.push_str(&render_function(f));
+        }
     }
     out
 }
@@ -76,7 +97,7 @@ pub fn render(model: &DocModel) -> Vec<RenderedFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DocModel, GroupDoc, SymbolDoc, SymbolDocKind};
+    use crate::model::{DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
 
     fn sample() -> DocModel {
         DocModel {
@@ -90,6 +111,30 @@ mod tests {
                     unit: Some("rpm".into()),
                     security: None,
                 }],
+                functions: vec![],
+            }],
+        }
+    }
+
+    fn sample_with_functions() -> DocModel {
+        DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![],
+                functions: vec![
+                    FunctionDoc {
+                        path: "Root.Engine.Reset".into(),
+                        inputs: vec![],
+                    },
+                    FunctionDoc {
+                        path: "Root.Engine.Update".into(),
+                        inputs: vec![
+                            ("Timeout".to_string(), "float".to_string()),
+                            ("Enable".to_string(), "bool".to_string()),
+                        ],
+                    },
+                ],
             }],
         }
     }
@@ -115,6 +160,55 @@ mod tests {
             page.body
                 .contains("| `Root.Engine.Speed` | f32 | rpm | — |"),
             "got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn group_page_with_no_functions_omits_functions_section() {
+        let files = render(&sample());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            !page.body.contains("## Functions"),
+            "must not emit Functions section when there are none; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn group_page_renders_functions_section() {
+        let files = render(&sample_with_functions());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body.contains("## Functions"),
+            "missing Functions section; got:\n{}",
+            page.body
+        );
+        // Function with no inputs shows "(no inputs)".
+        assert!(
+            page.body.contains("### Root.Engine.Reset"),
+            "missing Reset heading; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("(no inputs)"),
+            "missing (no inputs) for Reset; got:\n{}",
+            page.body
+        );
+        // Function with inputs lists each param as "- name: type".
+        assert!(
+            page.body.contains("### Root.Engine.Update"),
+            "missing Update heading; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("- Timeout: float"),
+            "missing Timeout param; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("- Enable: bool"),
+            "missing Enable param; got:\n{}",
             page.body
         );
     }
