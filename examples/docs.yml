@@ -1,0 +1,52 @@
+# Example: drop this in your M1 project repo as `.github/workflows/docs.yml`.
+#
+# On every push to the default branch it builds an always-current HTML reference
+# of your project with m1-doc and publishes it to GitHub Pages. Enable Pages for
+# the repo once (Settings -> Pages -> Source: GitHub Actions).
+#
+# Pin m1-doc to a released tag for reproducible docs; bump it deliberately.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# GitHub Pages deploy needs these; least-privilege otherwise.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight deploy at a time; let a newer push supersede an older one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install m1-doc
+        # A released tag freezes the generator (and its toolchain pins) so the
+        # docs don't shift under you. See https://github.com/C-Nucifora/m1-doc/releases
+        run: cargo install --git https://github.com/C-Nucifora/m1-doc --tag v0.1.0 m1-doc
+
+      - name: Generate the HTML reference
+        # Point --project at your Project.m1prj (default: nearest upward, or
+        # $M1_PROJECT). --out is the directory published to Pages.
+        run: m1-doc --project Project.m1prj --format html --out site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
