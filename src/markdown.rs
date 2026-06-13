@@ -1,7 +1,7 @@
 //! Renders a [`DocModel`] to Markdown: one file per group plus an `index.md`.
 //! This is the canonical output; the HTML renderer (P3) consumes these files.
 
-use crate::model::{DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
+use crate::model::{AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
 use std::fmt::Write as _;
 
 /// A rendered file: a project-relative path and its Markdown body.
@@ -17,7 +17,18 @@ fn group_filename(group_path: &str) -> String {
     format!("{group_path}.md")
 }
 
-/// Render one function entry as a `### <path>` subsection with its input list.
+/// Format one annotation as `@m1:<kind>(<args>)`, omitting the parens when
+/// there are no args.
+fn format_annotation(ann: &AnnotationDoc) -> String {
+    if ann.args.is_empty() {
+        format!("@m1:{}", ann.kind)
+    } else {
+        format!("@m1:{}({})", ann.kind, ann.args.join(", "))
+    }
+}
+
+/// Render one function entry as a `### <path>` subsection with its input list
+/// and, when present, an `**Annotations:**` block listing each `@m1:` annotation.
 fn render_function(f: &FunctionDoc) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "### {}\n", f.path);
@@ -26,6 +37,13 @@ fn render_function(f: &FunctionDoc) -> String {
     } else {
         for (name, ty) in &f.inputs {
             let _ = writeln!(out, "- {name}: {ty}");
+        }
+        out.push('\n');
+    }
+    if !f.annotations.is_empty() {
+        let _ = writeln!(out, "**Annotations:**\n");
+        for ann in &f.annotations {
+            let _ = writeln!(out, "- {}", format_annotation(ann));
         }
         out.push('\n');
     }
@@ -126,6 +144,7 @@ mod tests {
                     FunctionDoc {
                         path: "Root.Engine.Reset".into(),
                         inputs: vec![],
+                        annotations: vec![],
                     },
                     FunctionDoc {
                         path: "Root.Engine.Update".into(),
@@ -133,6 +152,7 @@ mod tests {
                             ("Timeout".to_string(), "float".to_string()),
                             ("Enable".to_string(), "bool".to_string()),
                         ],
+                        annotations: vec![],
                     },
                 ],
             }],
@@ -209,6 +229,60 @@ mod tests {
         assert!(
             page.body.contains("- Enable: bool"),
             "missing Enable param; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn function_with_annotations_renders_annotation_list() {
+        use crate::model::AnnotationDoc;
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![],
+                functions: vec![FunctionDoc {
+                    path: "Root.Engine.Update".into(),
+                    inputs: vec![],
+                    annotations: vec![
+                        AnnotationDoc {
+                            kind: "requires-finite".into(),
+                            args: vec![],
+                        },
+                        AnnotationDoc {
+                            kind: "allow".into(),
+                            args: vec!["L010".into()],
+                        },
+                    ],
+                }],
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body.contains("**Annotations:**"),
+            "missing Annotations label; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("- @m1:requires-finite"),
+            "missing requires-finite annotation; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("- @m1:allow(L010)"),
+            "missing allow(L010) annotation; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn function_without_annotations_omits_annotation_section() {
+        let files = render(&sample_with_functions());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            !page.body.contains("**Annotations:**"),
+            "must not emit Annotations when there are none; got:\n{}",
             page.body
         );
     }
