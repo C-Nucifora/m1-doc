@@ -20,10 +20,13 @@ pub struct AnnotationDoc {
 /// (e.g. `"float"`, `"bool"`). Empty when the component declares no signature.
 /// `annotations` holds every `@m1:` annotation found in the function's script,
 /// in source order. Empty when none are found or no script is available.
+/// `return_type` is the inferred or declared return type label (e.g. `"float"`,
+/// `"bool"`), or `None` when the type could not be determined.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FunctionDoc {
     pub path: String,
     pub inputs: Vec<(String, String)>,
+    pub return_type: Option<String>,
     pub annotations: Vec<AnnotationDoc>,
 }
 
