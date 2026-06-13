@@ -3,8 +3,8 @@
 //! (`Root.Engine` for `Root.Engine.Speed`).
 
 use crate::model::{DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
-use m1_typecheck::symbols::{Symbol, SymbolKind};
 use m1_typecheck::Project;
+use m1_typecheck::symbols::{Symbol, SymbolKind};
 use std::collections::BTreeMap;
 
 /// The top-level group a symbol's docs belong on: the first two dot-segments
