@@ -1,6 +1,17 @@
 //! The in-memory documentation model — the single source of truth that the
 //! renderers read. No m1-core / m1-typecheck types leak past this boundary.
 
+/// One documented function or method.
+///
+/// `inputs` holds the declared input parameters in declaration order, each as
+/// `(name, type_label)` where `type_label` is the human-readable type string
+/// (e.g. `"float"`, `"bool"`). Empty when the component declares no signature.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FunctionDoc {
+    pub path: String,
+    pub inputs: Vec<(String, String)>,
+}
+
 /// One documented symbol (channel / parameter / constant).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolDoc {
@@ -37,6 +48,8 @@ impl SymbolDocKind {
 pub struct GroupDoc {
     pub path: String,
     pub symbols: Vec<SymbolDoc>,
+    /// Functions and methods declared in this group, sorted by path.
+    pub functions: Vec<FunctionDoc>,
 }
 
 /// The whole project's documentation, groups sorted by path.
