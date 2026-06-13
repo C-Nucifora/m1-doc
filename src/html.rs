@@ -57,13 +57,23 @@ fn rewrite_md_links(html: &str) -> String {
         // Find the closing quote.
         if let Some(end) = rest.find('"') {
             let href = &rest[..end];
-            if href.ends_with(".md")
-                && !href.starts_with("http://")
-                && !href.starts_with("https://")
-            {
-                // Replace the trailing `.md` with `.html`.
-                out.push_str(&href[..href.len() - 3]);
-                out.push_str(".html");
+            if !href.starts_with("http://") && !href.starts_with("https://") {
+                // Split off any fragment (#…) or query (?…) that follows the
+                // path component so we can check the path extension alone.
+                let (path, suffix) = if let Some(i) = href.find(['#', '?']) {
+                    (&href[..i], &href[i..])
+                } else {
+                    (href, "")
+                };
+                if let Some(stem) = path.strip_suffix(".md") {
+                    // Replace the trailing `.md` with `.html`, then reattach
+                    // the fragment/query string unchanged.
+                    out.push_str(stem);
+                    out.push_str(".html");
+                    out.push_str(suffix);
+                } else {
+                    out.push_str(href);
+                }
             } else {
                 out.push_str(href);
             }
@@ -240,6 +250,28 @@ mod tests {
         assert!(
             out.contains("href=\"Root.Engine.html\""),
             "expected .md→.html rewrite; got:\n{out}"
+        );
+    }
+
+    // (e) .md links with a fragment are rewritten; fragment is preserved.
+    #[test]
+    fn md_link_with_fragment_is_rewritten() {
+        let html = r#"<a href="Root.Engine.md#section">Engine</a>"#;
+        let out = rewrite_md_links(html);
+        assert!(
+            out.contains("href=\"Root.Engine.html#section\""),
+            "expected .md#section→.html#section rewrite; got:\n{out}"
+        );
+    }
+
+    // (f) .md links with a query string are rewritten; query is preserved.
+    #[test]
+    fn md_link_with_query_is_rewritten() {
+        let html = r#"<a href="Root.Engine.md?v=1">Engine</a>"#;
+        let out = rewrite_md_links(html);
+        assert!(
+            out.contains("href=\"Root.Engine.html?v=1\""),
+            "expected .md?v=1→.html?v=1 rewrite; got:\n{out}"
         );
     }
 
