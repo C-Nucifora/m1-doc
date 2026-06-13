@@ -126,6 +126,7 @@ mod tests {
                     FunctionDoc {
                         path: "Root.Engine.Reset".into(),
                         inputs: vec![],
+                        annotations: vec![],
                     },
                     FunctionDoc {
                         path: "Root.Engine.Update".into(),
@@ -133,6 +134,7 @@ mod tests {
                             ("Timeout".to_string(), "float".to_string()),
                             ("Enable".to_string(), "bool".to_string()),
                         ],
+                        annotations: vec![],
                     },
                 ],
             }],

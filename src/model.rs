@@ -1,15 +1,30 @@
 //! The in-memory documentation model — the single source of truth that the
 //! renderers read. No m1-core / m1-typecheck types leak past this boundary.
 
+/// One `@m1:` annotation attached to a function's script.
+///
+/// Each argument is rendered to a `String`: a positional becomes its value; a
+/// named becomes `key=value`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AnnotationDoc {
+    /// The bare kind name without the `@m1:` marker (e.g. `"requires-finite"`).
+    pub kind: String,
+    /// Each argument rendered as a string.
+    pub args: Vec<String>,
+}
+
 /// One documented function or method.
 ///
 /// `inputs` holds the declared input parameters in declaration order, each as
 /// `(name, type_label)` where `type_label` is the human-readable type string
 /// (e.g. `"float"`, `"bool"`). Empty when the component declares no signature.
+/// `annotations` holds every `@m1:` annotation found in the function's script,
+/// in source order. Empty when none are found or no script is available.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FunctionDoc {
     pub path: String,
     pub inputs: Vec<(String, String)>,
+    pub annotations: Vec<AnnotationDoc>,
 }
 
 /// One documented symbol (channel / parameter / constant).
@@ -68,5 +83,28 @@ mod tests {
         assert_eq!(SymbolDocKind::Channel.plural(), "Channels");
         assert_eq!(SymbolDocKind::Parameter.plural(), "Parameters");
         assert_eq!(SymbolDocKind::Constant.plural(), "Constants");
+    }
+
+    #[test]
+    fn annotation_doc_defaults_to_empty() {
+        let a = AnnotationDoc::default();
+        assert!(a.kind.is_empty());
+        assert!(a.args.is_empty());
+    }
+
+    #[test]
+    fn function_doc_defaults_to_no_annotations() {
+        let f = FunctionDoc::default();
+        assert!(f.annotations.is_empty());
+    }
+
+    #[test]
+    fn annotation_doc_stores_kind_and_args() {
+        let a = AnnotationDoc {
+            kind: "requires-finite".into(),
+            args: vec!["min=0".into()],
+        };
+        assert_eq!(a.kind, "requires-finite");
+        assert_eq!(a.args, vec!["min=0"]);
     }
 }
