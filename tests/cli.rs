@@ -109,6 +109,43 @@ fn format_html_writes_html_only() {
     );
 }
 
+// #17: positional FILES are accepted but not consumed yet. Passing them must
+// not silently exit 0 as if they were used — it should still succeed but warn.
+#[test]
+fn passing_files_warns_they_are_unused() {
+    let dir = tempfile::tempdir().unwrap();
+    let prj = dir.path().join("Project.m1prj");
+    std::fs::write(&prj, FIXTURE_XML).unwrap();
+    let script = dir.path().join("Main.m1scr");
+    std::fs::write(&script, "// script\n").unwrap();
+    let out = dir.path().join("docs");
+
+    let assert = Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            prj.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--format",
+            "markdown",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
+    assert!(
+        stderr.contains("not used yet"),
+        "expected a warning that FILES are unused; got stderr:\n{stderr}"
+    );
+    // Project docs are still generated.
+    assert!(
+        out.join("index.md").exists(),
+        "index.md should still be written"
+    );
+}
+
 #[test]
 fn nonexistent_project_fails_with_path_in_stderr() {
     let dir = tempfile::tempdir().unwrap();
