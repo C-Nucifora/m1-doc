@@ -100,7 +100,9 @@ m1-doc [SCRIPTS]... --project <PROJECT> --out <DIR> --format <markdown|html|both
   as the other tools do.
 - `--out` directory for generated files (default `m1-doc/`).
 - `--format` defaults to `both`.
-- `--title` overrides the index heading (default: the project name).
+- `--title` overrides the index heading. The m1-typecheck `Project` API does not
+  expose the project's `Name` attribute, so the default is the project file's
+  directory name (the closest available proxy).
 - Exit codes mirror the sibling CLIs: 0 success, 1 generation error, 2 usage.
 
 ## Dependencies

@@ -1,0 +1,18 @@
+[package]
+name = "m1-doc"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Documentation generator for MoTeC M1 projects"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+m1-core = { git = "https://github.com/C-Nucifora/m1-core.git", tag = "v0.10.0" } # used from P2 for @m1: annotations
+m1-typecheck = { git = "https://github.com/C-Nucifora/m1-typecheck.git", tag = "v0.35.0" }
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
