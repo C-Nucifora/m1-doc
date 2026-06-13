@@ -2,7 +2,7 @@
 //! parameters, and constants are grouped by their top-level group
 //! (`Root.Engine` for `Root.Engine.Speed`).
 
-use crate::model::{DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
+use crate::model::{AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
 use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind};
 use std::collections::BTreeMap;
@@ -91,6 +91,60 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
     }
 }
 
+/// Convert an `m1_core::AnnotationArg` to its string representation.
+fn arg_to_string(arg: &m1_core::AnnotationArg) -> String {
+    match arg {
+        m1_core::AnnotationArg::Positional(v) => v.clone(),
+        m1_core::AnnotationArg::Named { key, value } => format!("{key}={value}"),
+    }
+}
+
+/// Parse `@m1:` annotations from script source text.
+fn parse_annotations(source: &str) -> Vec<AnnotationDoc> {
+    let cst = m1_core::parse(source);
+    let registry = m1_core::Registry::seed();
+    let annotations = m1_core::annotations(&cst, &registry);
+    annotations
+        .all()
+        .iter()
+        .map(|ann| AnnotationDoc {
+            kind: ann.kind.clone(),
+            args: ann.args.iter().map(arg_to_string).collect(),
+        })
+        .collect()
+}
+
+/// Resolve the path to a script file given the project directory and the
+/// function's filename (a basename like `"Foo.m1scr"`).
+///
+/// Strategy: try `project_dir/filename` first. If that is missing, fall back to
+/// a recursive walk of `project_dir` looking for the first file whose basename
+/// matches.
+fn resolve_script(project_dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
+    let direct = project_dir.join(filename);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    // Recursive fallback: walk the project directory tree.
+    find_file_in_dir(project_dir, filename)
+}
+
+/// Recursively search `dir` for the first file whose base name matches `name`.
+fn find_file_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_in_dir(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// Load a project file and build its documentation model. Keeps all
 /// m1-typecheck I/O inside the loader so the rest of the crate stays
 /// toolchain-agnostic.
@@ -99,7 +153,40 @@ pub fn load(
     title: String,
 ) -> Result<DocModel, m1_typecheck::project::LoadError> {
     let project = m1_typecheck::Project::load(project_path)?;
-    Ok(build_model(&project, title))
+    let mut model = build_model(&project, title);
+
+    // Build a map of function path -> script filename from the project symbols.
+    // Only function/method symbols carry a filename.
+    let path_to_filename: BTreeMap<String, String> = project
+        .symbols()
+        .iter()
+        .filter(|sym| is_function(sym.kind))
+        .filter_map(|sym| sym.filename.as_ref().map(|f| (sym.path.clone(), f.clone())))
+        .collect();
+
+    if path_to_filename.is_empty() {
+        return Ok(model);
+    }
+
+    let project_dir = project_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    for group in &mut model.groups {
+        for func in &mut group.functions {
+            let Some(filename) = path_to_filename.get(&func.path) else {
+                continue;
+            };
+            let Some(script_path) = resolve_script(project_dir, filename) else {
+                continue;
+            };
+            let bytes = std::fs::read(&script_path).unwrap_or_default();
+            let source = String::from_utf8_lossy(&bytes);
+            func.annotations = parse_annotations(&source);
+        }
+    }
+
+    Ok(model)
 }
 
 /// Build the documentation model from a project, with `title` for the index.
@@ -236,6 +323,65 @@ mod tests {
         assert!(
             eng.functions[0].inputs.is_empty(),
             "no-signature function must have empty inputs"
+        );
+    }
+
+    /// Integration test: writes a real tempdir with a Project.m1prj that
+    /// declares a FuncUser with Filename= and a .m1scr containing a @m1:
+    /// annotation, then calls loader::load and asserts the annotation is surfaced.
+    #[test]
+    fn annotations_surfaced_from_script_file() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        let script_path = dir.path().join("Foo.m1scr");
+
+        fs::write(
+            &prj_path,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.FuncUser" Filename="Foo.m1scr" Name="Root.Engine.Update"/>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+
+        fs::write(&script_path, "// @m1:requires-finite\nx = a / b;\n").unwrap();
+
+        let model = load(&prj_path, "T".into()).unwrap();
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        assert_eq!(
+            eng.functions.len(),
+            1,
+            "expected one function; got {:?}",
+            eng.functions
+        );
+        let f = &eng.functions[0];
+        assert_eq!(
+            f.annotations.len(),
+            1,
+            "expected one annotation; got {:?}",
+            f.annotations
+        );
+        assert_eq!(
+            f.annotations[0].kind, "requires-finite",
+            "unexpected kind: {:?}",
+            f.annotations[0]
+        );
+        assert!(
+            f.annotations[0].args.is_empty(),
+            "requires-finite has no args; got {:?}",
+            f.annotations[0].args
         );
     }
 
