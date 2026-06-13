@@ -14,7 +14,8 @@ use std::process;
     about = "Documentation generator for MoTeC M1 projects"
 )]
 struct Args {
-    /// Scripts (reserved for P2 function docs; ignored in P1).
+    /// Script files to document. Function docs from FILES are not generated
+    /// yet; passing scripts currently has no effect (a warning is printed).
     files: Vec<PathBuf>,
     /// Project.m1prj (defaults to nearest upward, or $M1_PROJECT).
     #[arg(long)]
@@ -60,6 +61,18 @@ fn resolve_project(arg: Option<PathBuf>) -> Option<PathBuf> {
 
 fn main() {
     let args = Args::parse();
+
+    // Positional FILES are accepted but not yet consumed (function-doc ingestion
+    // is a future feature). Silently dropping user-supplied paths is a footgun,
+    // so say so rather than exiting 0 as if they were processed (#17).
+    if !args.files.is_empty() {
+        eprintln!(
+            "m1-doc: note: {} script file(s) were passed but are not used yet \
+             (function docs from FILES land in a future release); generating \
+             project docs only.",
+            args.files.len()
+        );
+    }
 
     let Some(project_path) = resolve_project(args.project) else {
         eprintln!("m1-doc: no Project.m1prj found (pass --project or set $M1_PROJECT)");
