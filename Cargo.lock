@@ -291,8 +291,8 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "m1-core"
-version = "0.10.0"
-source = "git+https://github.com/C-Nucifora/m1-core.git?tag=v0.10.0#099f0505dbb0a2f07c48a00eaaf9bb133618b1a1"
+version = "0.12.0"
+source = "git+https://github.com/C-Nucifora/m1-core.git?tag=v0.12.0#120599ac3706104e2244c525c67038f68204c9a4"
 dependencies = [
  "tree-sitter",
  "tree-sitter-m1",
@@ -311,8 +311,8 @@ dependencies = [
 
 [[package]]
 name = "m1-typecheck"
-version = "0.35.0"
-source = "git+https://github.com/C-Nucifora/m1-typecheck.git?tag=v0.35.0#77b24c9e19170a5452f0eb867cdd988f4e428edf"
+version = "0.36.0"
+source = "git+https://github.com/C-Nucifora/m1-typecheck.git?tag=v0.36.0#b23b981d03cb00ec097ddd2a4abb1b08855d8644"
 dependencies = [
  "clap",
  "m1-core",
@@ -325,10 +325,11 @@ dependencies = [
 
 [[package]]
 name = "m1-workspace"
-version = "0.8.1"
-source = "git+https://github.com/nedlane/m1-workspace.git?tag=v0.8.1#20c4a9cd4ed6c5087433abf89dfb405c95e2bfac"
+version = "0.10.0"
+source = "git+https://github.com/nedlane/m1-workspace.git?tag=v0.10.0#ec54c4617260a66d016d08629f3e2ae3beac413f"
 dependencies = [
  "serde",
+ "serde_ignored",
  "toml",
 ]
 
@@ -499,6 +500,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,8 +641,8 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "tree-sitter-m1"
-version = "0.6.0"
-source = "git+https://github.com/C-Nucifora/tree-sitter-m1.git?tag=v0.6.0#c83a032bb6b53994cc8f2f9e72c03c028b449135"
+version = "0.7.0"
+source = "git+https://github.com/C-Nucifora/tree-sitter-m1.git?tag=v0.7.0#86aff156dcaeb81039f09df266b48cc8d41058ae"
 dependencies = [
  "cc",
  "tree-sitter-language",
