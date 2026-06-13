@@ -42,9 +42,11 @@ fn function_doc(sym: &Symbol) -> FunctionDoc {
         .iter()
         .map(|(name, vt)| (name.clone(), value_type_label(*vt).to_string()))
         .collect();
+    let return_type = sym.return_type.map(|vt| value_type_label(vt).to_string());
     FunctionDoc {
         path: sym.path.clone(),
         inputs,
+        return_type,
         annotations: Vec::new(),
     }
 }
@@ -145,6 +147,39 @@ fn find_file_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::Path
     None
 }
 
+/// Collect every `.m1scr` file under `dir` (recursively) as `(basename, source)`
+/// pairs suitable for passing to `m1_typecheck::parsed::parse_all`. The source is
+/// read with lossy UTF-8 decoding to handle Windows-1252 encoded files without
+/// aborting the entire collection.
+fn collect_scripts(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    collect_scripts_rec(dir, &mut out);
+    out
+}
+
+fn collect_scripts_rec(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_scripts_rec(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("m1scr") {
+            let Some(name) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let bytes = std::fs::read(&path).unwrap_or_default();
+            let source = String::from_utf8_lossy(&bytes).into_owned();
+            out.push((name, source));
+        }
+    }
+}
+
 /// Load a project file and build its documentation model. Keeps all
 /// m1-typecheck I/O inside the loader so the rest of the crate stays
 /// toolchain-agnostic.
@@ -152,7 +187,17 @@ pub fn load(
     project_path: &std::path::Path,
     title: String,
 ) -> Result<DocModel, m1_typecheck::project::LoadError> {
-    let project = m1_typecheck::Project::load(project_path)?;
+    let mut project = m1_typecheck::Project::load(project_path)?;
+
+    // Infer return types from script bodies before building the model so that
+    // `function_doc` can read the populated `return_type` from each symbol.
+    let project_dir = project_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let script_pairs = collect_scripts(project_dir);
+    let parsed = m1_typecheck::parsed::parse_all(&script_pairs);
+    project.infer_return_types(&parsed);
+
     let mut model = build_model(&project, title);
 
     // Build a map of function path -> script filename from the project symbols.
@@ -167,10 +212,6 @@ pub fn load(
     if path_to_filename.is_empty() {
         return Ok(model);
     }
-
-    let project_dir = project_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
 
     for group in &mut model.groups {
         for func in &mut group.functions {
@@ -407,6 +448,100 @@ mod tests {
             ),
             "parameter with security; got {:?}",
             eng.symbols
+        );
+    }
+
+    /// Integration test: a FuncUser whose `.m1scr` body contains `Out = 1.0;`
+    /// should have its return type inferred as `"float"` by the loader.
+    ///
+    /// The script file name uses the `<stem>.m1scr` convention so
+    /// `infer_return_types` associates it with the function symbol via the
+    /// explicit `Filename=` attribute match.
+    #[test]
+    fn return_type_inferred_from_script_out_assignment() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        let script_path = dir.path().join("Engine.Compute.m1scr");
+
+        fs::write(
+            &prj_path,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.FuncUser" Filename="Engine.Compute.m1scr" Name="Root.Engine.Compute"/>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+
+        // `Out = 1.0;` is a float literal assignment to the return-value object.
+        fs::write(&script_path, "Out = 1.0;\n").unwrap();
+
+        let model = load(&prj_path, "T".into()).unwrap();
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        assert_eq!(
+            eng.functions.len(),
+            1,
+            "expected one function; got {:?}",
+            eng.functions
+        );
+        let f = &eng.functions[0];
+        assert_eq!(
+            f.return_type.as_deref(),
+            Some("float"),
+            "expected float return type from `Out = 1.0;`; got {:?}",
+            f.return_type
+        );
+    }
+
+    /// A function with no `Out =` assignment should have `return_type` as `None`.
+    #[test]
+    fn return_type_none_when_script_has_no_out_assignment() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        let script_path = dir.path().join("Engine.Helper.m1scr");
+
+        fs::write(
+            &prj_path,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.FuncUser" Filename="Engine.Helper.m1scr" Name="Root.Engine.Helper"/>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+
+        // No `Out =` assignment: return type must not be guessed.
+        fs::write(&script_path, "local x = 1;\n").unwrap();
+
+        let model = load(&prj_path, "T".into()).unwrap();
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        let f = &eng.functions[0];
+        assert_eq!(
+            f.return_type, None,
+            "no Out = means no return type; got {:?}",
+            f.return_type
         );
     }
 }
