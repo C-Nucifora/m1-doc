@@ -451,6 +451,38 @@ mod tests {
         );
     }
 
+    /// A `BuiltIn.Constant` component must be collected as `SymbolDocKind::Constant`
+    /// under its top-level group. This exercises the `doc_kind` branch and
+    /// `build_model` path that were previously untested; removing the
+    /// `SymbolKind::Constant => Some(SymbolDocKind::Constant)` arm in `doc_kind`
+    /// would cause this test to fail.
+    #[test]
+    fn constant_collected_under_its_group() {
+        const CONST_PROJECT: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.Constant" Name="Root.Engine.MaxRpm"><Props Type="u16"/></Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+        let project = Project::from_xml(CONST_PROJECT).unwrap();
+        let model = build_model(&project, "Demo".into());
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        assert!(
+            eng.symbols.iter().any(|s| s.path == "Root.Engine.MaxRpm"
+                && s.kind == SymbolDocKind::Constant
+                && s.type_label == "u16"),
+            "expected Constant symbol Root.Engine.MaxRpm with type u16; got {:?}",
+            eng.symbols
+        );
+    }
+
     /// Integration test: a FuncUser whose `.m1scr` body contains `Out = 1.0;`
     /// should have its return type inferred as `"float"` by the loader.
     ///

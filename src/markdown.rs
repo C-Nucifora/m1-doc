@@ -190,6 +190,54 @@ mod tests {
         );
     }
 
+    fn sample_with_constant() -> DocModel {
+        DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Engine.MaxRpm".into(),
+                    kind: SymbolDocKind::Constant,
+                    type_label: "u16".into(),
+                    unit: None,
+                    security: None,
+                }],
+                functions: vec![],
+            }],
+        }
+    }
+
+    /// A group containing a Constant symbol must render a `## Constants` section
+    /// and include the constant's row in the table. Removing the
+    /// `SymbolDocKind::Constant` branch from `render_group` would cause this test
+    /// to fail.
+    #[test]
+    fn group_page_tables_its_constants() {
+        let files = render(&sample_with_constant());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body.contains("## Constants"),
+            "expected Constants section; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("| `Root.Engine.MaxRpm` | u16 | — | — |"),
+            "expected constant row; got:\n{}",
+            page.body
+        );
+        // Channels and Parameters sections must be absent when there are none.
+        assert!(
+            !page.body.contains("## Channels"),
+            "must not emit Channels when there are none; got:\n{}",
+            page.body
+        );
+        assert!(
+            !page.body.contains("## Parameters"),
+            "must not emit Parameters when there are none; got:\n{}",
+            page.body
+        );
+    }
+
     #[test]
     fn group_page_with_no_functions_omits_functions_section() {
         let files = render(&sample());
