@@ -44,11 +44,12 @@ deterministic — generating twice yields a byte-identical file — with stable
 object-key order and arrays in the loader's sorted order. Missing data is `null`,
 never invented.
 
-Top-level: `{ schema_version, title, groups[], enums[] }`. Each group carries
-`path`, its `symbols`, `functions`, `tables`, `objects`, `can_messages`, and the
-paths of its immediate `children`. A symbol carries `path`, `anchor`, `kind`
-(`channel`/`parameter`/`constant`), `type_label`, `quantity`, `unit`,
-`base_unit`, `log_rate_hz`, `security`, `enum_ref`, and `classname`; a function
+Top-level: `{ schema_version, title, target_hardware, groups[], enums[] }`. Each
+group carries `path`, its `symbols`, `functions`, `tables`, `objects`,
+`can_messages`, and the paths of its immediate `children`. A symbol carries
+`path`, `anchor`, `kind` (`channel`/`parameter`/`constant`), `type_label`,
+`quantity`, `unit`, `base_unit`, `log_rate_hz`, `security`, `enum_ref`,
+`classname`, and `tags`; a function
 carries its `inputs` (`{name, type}`), `return_type`, `annotations`,
 `call_rate_hz`, and `source_path`; tables carry `axes` and `output_unit`; enums
 carry `members`, `default`, and `open`; CAN messages carry `id`, `dlc`, and
