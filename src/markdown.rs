@@ -332,6 +332,7 @@ fn type_cell(s: &SymbolDoc, enum_anchors: &HashMap<&str, &str>) -> String {
 fn render_group(
     group: &GroupDoc,
     enum_anchors: &HashMap<&str, &str>,
+    xrefs: &CrossRefs,
     opts: &RenderOptions,
 ) -> String {
     let mut out = String::new();
@@ -442,7 +443,107 @@ fn render_group(
             out.push_str(&render_function(f, opts));
         }
     }
+    render_references(&mut out, group, xrefs);
+    render_used_by(&mut out, group, xrefs);
     out
+}
+
+/// Cross-reference link tables built once from the whole model (#29): where each
+/// symbol and reference lives (page filename + anchor), so a target or a
+/// who-references entry can be turned into a deep link, plus the inverse
+/// used-by map (resolved target symbol path → the references that point at it).
+struct CrossRefs<'a> {
+    symbol_loc: HashMap<&'a str, (String, &'a str)>,
+    reference_loc: HashMap<&'a str, (String, &'a str)>,
+    used_by: HashMap<&'a str, Vec<&'a str>>,
+}
+
+/// Build the [`CrossRefs`] tables from every group's symbols and references.
+fn build_cross_refs(model: &DocModel) -> CrossRefs<'_> {
+    let mut symbol_loc: HashMap<&str, (String, &str)> = HashMap::new();
+    let mut reference_loc: HashMap<&str, (String, &str)> = HashMap::new();
+    let mut used_by: HashMap<&str, Vec<&str>> = HashMap::new();
+    for g in &model.groups {
+        let file = group_filename(&g.path);
+        for s in &g.symbols {
+            symbol_loc.insert(s.path.as_str(), (file.clone(), s.anchor.as_str()));
+        }
+        for r in &g.references {
+            reference_loc.insert(r.path.as_str(), (file.clone(), r.anchor.as_str()));
+            if let Some(t) = &r.target_resolved {
+                used_by.entry(t.as_str()).or_default().push(r.path.as_str());
+            }
+        }
+    }
+    for refs in used_by.values_mut() {
+        refs.sort_unstable();
+    }
+    CrossRefs {
+        symbol_loc,
+        reference_loc,
+        used_by,
+    }
+}
+
+/// `` [`label`](file#anchor) `` when the path is locatable, else plain `` `label` ``.
+fn xref_link(label: &str, loc: Option<&(String, &str)>) -> String {
+    match loc {
+        Some((file, anchor)) => format!("[`{label}`]({file}#{anchor})"),
+        None => format!("`{label}`"),
+    }
+}
+
+/// `## References` — every `BuiltIn.Reference` in the group and what it aliases.
+/// The target deep-links to the symbol when it resolved to one we document, else
+/// the raw `<Props Target>` string is shown verbatim (`—` when it has none) so
+/// the page never invents or drops a target (#29).
+fn render_references(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs) {
+    if group.references.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## References\n");
+    let _ = writeln!(out, "| Reference | Target |");
+    let _ = writeln!(out, "| --- | --- |");
+    for r in &group.references {
+        let target = match &r.target_resolved {
+            Some(t) => xref_link(t, xrefs.symbol_loc.get(t.as_str())),
+            None if r.target_raw.is_empty() => "—".to_string(),
+            None => format!("`{}`", r.target_raw),
+        };
+        let _ = writeln!(
+            out,
+            "| <a id=\"{}\"></a>`{}` | {} |",
+            r.anchor, r.path, target
+        );
+    }
+    let _ = writeln!(out);
+}
+
+/// `## Used by` — the inverse of the references: for each symbol on this page
+/// that a reference targets, the references that point at it, deep-linked (#29).
+/// A reader on a channel sees who consumes it.
+fn render_used_by(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs) {
+    let rows: Vec<(&SymbolDoc, &Vec<&str>)> = group
+        .symbols
+        .iter()
+        .filter_map(|s| xrefs.used_by.get(s.path.as_str()).map(|refs| (s, refs)))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Used by\n");
+    let _ = writeln!(out, "| Symbol | Referenced by |");
+    let _ = writeln!(out, "| --- | --- |");
+    for (s, refs) in rows {
+        let by = refs
+            .iter()
+            .map(|rp| xref_link(rp, xrefs.reference_loc.get(*rp)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The symbol is on THIS page, so a same-page fragment link suffices.
+        let _ = writeln!(out, "| [`{}`](#{}) | {} |", s.path, s.anchor, by);
+    }
+    let _ = writeln!(out);
 }
 
 /// Pluralise a count for the stats line: `1 channel`, `2 channels`, `0 tables`.
@@ -645,6 +746,8 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
         .iter()
         .map(|e| (e.name.as_str(), e.anchor.as_str()))
         .collect();
+    // Cross-reference link tables, built once from the whole model (#29).
+    let xrefs = build_cross_refs(model);
     let mut files = vec![RenderedFile {
         path: "index.md".to_string(),
         body: render_index(model),
@@ -652,7 +755,7 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
     for g in &model.groups {
         files.push(RenderedFile {
             path: group_filename(&g.path),
-            body: render_group(g, &enum_anchors, opts),
+            body: render_group(g, &enum_anchors, &xrefs, opts),
         });
     }
     // One index page per tag (#34), in sorted tag order so the output is
@@ -698,6 +801,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         }
@@ -733,6 +837,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         }
@@ -764,6 +869,7 @@ mod tests {
             groups: vec![
                 GroupDoc {
                     path: "Root".into(),
+                    references: vec![],
                     children: vec!["Root.Engine".into()],
                     ..Default::default()
                 },
@@ -934,6 +1040,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         }
@@ -1048,6 +1155,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         };
@@ -1100,6 +1208,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         };
@@ -1172,6 +1281,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         };
@@ -1377,6 +1487,7 @@ mod tests {
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine.Fuel".into(),
+                references: vec![],
                 children: vec!["Root.Engine.Fuel.Pump".into()],
                 ..Default::default()
             }],
@@ -1411,6 +1522,7 @@ mod tests {
             groups: vec![
                 GroupDoc {
                     path: "Root".into(),
+                    references: vec![],
                     children: vec!["Root.Engine".into()],
                     ..Default::default()
                 },
@@ -1458,6 +1570,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         };
@@ -1504,6 +1617,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         };
@@ -1794,6 +1908,73 @@ mod tests {
         assert!(
             !page.body.contains("| Class |"),
             "Class column must be absent when all plain; got:\n{}",
+            page.body
+        );
+    }
+
+    /// #29: a group's `BuiltIn.Reference` aliases render a `## References` table
+    /// (resolved targets deep-linked, unresolved shown raw) and the inverse
+    /// `## Used by` table on the referenced symbol's page.
+    #[test]
+    fn references_and_used_by_render_with_links() {
+        use crate::model::ReferenceDoc;
+        let model = DocModel {
+            title: "T".into(),
+            target_hardware: None,
+            enums: vec![],
+            groups: vec![GroupDoc {
+                path: "Root.Sensors".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Sensors.OilP".into(),
+                    anchor: "root-sensors-oilp".into(),
+                    kind: SymbolDocKind::Channel,
+                    type_label: "f32".into(),
+                    ..Default::default()
+                }],
+                references: vec![
+                    ReferenceDoc {
+                        path: "Root.Sensors.Alias".into(),
+                        anchor: "root-sensors-alias".into(),
+                        target_raw: "This.OilP".into(),
+                        target_resolved: Some("Root.Sensors.OilP".into()),
+                    },
+                    ReferenceDoc {
+                        path: "Root.Sensors.Dangling".into(),
+                        anchor: "root-sensors-dangling".into(),
+                        target_raw: "Nowhere.X".into(),
+                        target_resolved: None,
+                    },
+                ],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files
+            .iter()
+            .find(|f| f.path == "Root.Sensors.md")
+            .expect("Root.Sensors.md");
+
+        // Forward: the References section deep-links a resolved target.
+        assert!(page.body.contains("## References"), "got:\n{}", page.body);
+        assert!(
+            page.body
+                .contains("[`Root.Sensors.OilP`](Root.Sensors.md#root-sensors-oilp)"),
+            "resolved target must deep-link the symbol; got:\n{}",
+            page.body
+        );
+        // An unresolved target is shown verbatim, never linked.
+        assert!(
+            page.body.contains("`Nowhere.X`"),
+            "raw target must be shown verbatim; got:\n{}",
+            page.body
+        );
+
+        // Inverse: the symbol's page lists who references it, deep-linked.
+        assert!(page.body.contains("## Used by"), "got:\n{}", page.body);
+        assert!(
+            page.body
+                .contains("[`Root.Sensors.Alias`](Root.Sensors.md#root-sensors-alias)"),
+            "used-by must link the referencing alias; got:\n{}",
             page.body
         );
     }

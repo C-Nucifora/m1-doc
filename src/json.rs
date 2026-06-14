@@ -13,7 +13,7 @@
 
 use crate::model::{
     AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc,
-    ObjectDoc, SymbolDoc, SymbolDocKind, TableDoc,
+    ObjectDoc, ReferenceDoc, SymbolDoc, SymbolDocKind, TableDoc,
 };
 use std::fmt::Write as _;
 
@@ -54,7 +54,17 @@ fn write_group(w: &mut Writer, g: &GroupDoc) {
         w.field("can_messages", |w| {
             w.array(&g.can_messages, write_can_message)
         });
+        w.field("references", |w| w.array(&g.references, write_reference));
         w.field("children", |w| w.string_array(&g.children));
+    });
+}
+
+fn write_reference(w: &mut Writer, r: &ReferenceDoc) {
+    w.object(|w| {
+        w.field_str("path", &r.path);
+        w.field_str("anchor", &r.anchor);
+        w.field_str("target_raw", &r.target_raw);
+        w.field_opt_str("target_resolved", r.target_resolved.as_deref());
     });
 }
 
@@ -418,6 +428,7 @@ mod tests {
                         unit: Some("rpm".into()),
                     }],
                 }],
+                references: vec![],
                 children: vec!["Root.Engine.Fuel".into()],
             }],
             enums: vec![EnumDoc {
@@ -553,5 +564,48 @@ mod tests {
         };
         let json = render(&model);
         assert!(json.contains("\"log_rate_hz\": null"), "got:\n{json}");
+    }
+
+    #[test]
+    fn references_serialize_with_raw_and_resolved_targets() {
+        use crate::model::ReferenceDoc;
+        let model = DocModel {
+            title: "T".into(),
+            groups: vec![GroupDoc {
+                path: "Root".into(),
+                references: vec![
+                    ReferenceDoc {
+                        path: "Root.Alias".into(),
+                        anchor: "root-alias".into(),
+                        target_raw: "This.Value".into(),
+                        target_resolved: Some("Root.Value".into()),
+                    },
+                    ReferenceDoc {
+                        path: "Root.Dangling".into(),
+                        anchor: "root-dangling".into(),
+                        target_raw: "Off.Model".into(),
+                        target_resolved: None,
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let json = render(&model);
+        assert!(json.contains("\"references\""), "got:\n{json}");
+        assert!(
+            json.contains("\"target_raw\": \"This.Value\""),
+            "got:\n{json}"
+        );
+        assert!(
+            json.contains("\"target_resolved\": \"Root.Value\""),
+            "resolved target must serialize; got:\n{json}"
+        );
+        // An unresolved target serialises as null — degrade, never invent.
+        assert!(
+            json.contains("\"target_raw\": \"Off.Model\"")
+                && json.contains("\"target_resolved\": null"),
+            "unresolved target must be raw + null; got:\n{json}"
+        );
     }
 }

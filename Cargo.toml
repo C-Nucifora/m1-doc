@@ -1,6 +1,6 @@
 [package]
 name = "m1-doc"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Documentation generator for MoTeC M1 projects"
@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 m1-core = { git = "https://github.com/C-Nucifora/m1-core.git", tag = "v0.12.0" } # used from P2 for @m1: annotations
-m1-typecheck = { git = "https://github.com/C-Nucifora/m1-typecheck.git", tag = "v0.36.0" }
+m1-typecheck = { git = "https://github.com/C-Nucifora/m1-typecheck.git", tag = "v0.37.0" }
 pulldown-cmark = "0.13"
 
 [dev-dependencies]

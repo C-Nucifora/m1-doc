@@ -6,7 +6,7 @@
 
 use crate::model::{
     AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc,
-    ObjectDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc, anchor_slug,
+    ObjectDoc, ReferenceDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc, anchor_slug,
 };
 use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind, SymbolTable};
@@ -410,6 +410,22 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
             } else {
                 group.objects.push(object_doc(sym, table));
             }
+        } else if matches!(sym.kind, SymbolKind::Reference) {
+            group.references.push(reference_doc(sym));
+        }
+    }
+    // Resolve each reference's verbatim target to a documented symbol path (#29),
+    // keeping the resolution only when it actually names a symbol we document —
+    // otherwise the raw string is shown (degrade, never a dangling link). Done
+    // once the whole symbol set is known.
+    let symbol_paths: std::collections::HashSet<String> = groups
+        .values()
+        .flat_map(|g| g.symbols.iter().map(|s| s.path.clone()))
+        .collect();
+    for g in groups.values_mut() {
+        for r in &mut g.references {
+            r.target_resolved = resolve_reference_target(&r.path, &r.target_raw)
+                .filter(|p| symbol_paths.contains(p));
         }
     }
     // Wire each node into its parent's `children` list.
@@ -431,6 +447,7 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
         g.tables.sort_by(|a, b| a.path.cmp(&b.path));
         g.objects.sort_by(|a, b| a.path.cmp(&b.path));
         g.can_messages.sort_by(|a, b| a.path.cmp(&b.path));
+        g.references.sort_by(|a, b| a.path.cmp(&b.path));
         g.children.sort();
         assign_anchors(g);
     }
@@ -511,6 +528,45 @@ fn assign_anchors(group: &mut GroupDoc) {
         for s in &mut m.signals {
             s.anchor = unique(&s.path);
         }
+    }
+    for r in &mut group.references {
+        r.anchor = unique(&r.path);
+    }
+}
+
+/// Build a [`ReferenceDoc`] from a `SymbolKind::Reference` symbol. The target is
+/// the `<Props Target>` string verbatim (empty when the reference declares none);
+/// `target_resolved` is filled by a later pass once the full symbol set is known.
+fn reference_doc(sym: &Symbol) -> ReferenceDoc {
+    ReferenceDoc {
+        path: sym.path.clone(),
+        anchor: anchor_slug(&sym.path),
+        target_raw: sym.reference_target.clone().unwrap_or_default(),
+        target_resolved: None,
+    }
+}
+
+/// Resolve a reference's verbatim `<Props Target>` to a canonical symbol path
+/// when it uses an M1 path keyword (#29). `This` is the reference's enclosing
+/// group, `Parent` that group's parent, and `Root.…` is absolute. A bare or
+/// unrecognised target returns `None` — we never guess, so the renderer shows
+/// the raw string instead of a possibly-wrong link.
+fn resolve_reference_target(reference_path: &str, target: &str) -> Option<String> {
+    let this = parent_group(reference_path); // the reference's enclosing group
+    if target == "Root" || target.starts_with("Root.") {
+        Some(target.to_string())
+    } else if let Some(rest) = target.strip_prefix("This.") {
+        (!this.is_empty()).then(|| format!("{this}.{rest}"))
+    } else if target == "This" {
+        (!this.is_empty()).then(|| this.to_string())
+    } else if let Some(rest) = target.strip_prefix("Parent.") {
+        let parent = parent_group(this);
+        (!parent.is_empty()).then(|| format!("{parent}.{rest}"))
+    } else if target == "Parent" {
+        let parent = parent_group(this);
+        (!parent.is_empty()).then(|| parent.to_string())
+    } else {
+        None
     }
 }
 
@@ -1223,5 +1279,59 @@ mod tests {
             "no Out = means no return type; got {:?}",
             f.return_type
         );
+    }
+
+    /// #29: a `BuiltIn.Reference` is documented with its `<Props Target>` and,
+    /// where the target uses a path keyword and names a symbol we document, a
+    /// resolved canonical path; an off-model / bare target stays raw (no
+    /// invented link).
+    #[test]
+    fn references_documented_with_resolved_and_raw_targets() {
+        const REFS: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Sensors"/>
+   <Component Classname="BuiltIn.Channel" Name="Root.Sensors.OilP"><Props Type="f32"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.AliasThis"><Props Target="This.OilP"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.AliasAbs"><Props Target="Root.Sensors.OilP"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.Dangling"><Props Target="Nowhere.X"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.NoTarget"><Props/></Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+        let model = build_model(&Project::from_xml(REFS).unwrap(), "Demo".into());
+        let g = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Sensors")
+            .expect("Root.Sensors group");
+        let by_path = |p: &str| g.references.iter().find(|r| r.path == p).unwrap();
+
+        // `This.OilP` from Root.Sensors.* resolves to the documented sibling.
+        let this = by_path("Root.Sensors.AliasThis");
+        assert_eq!(this.target_raw, "This.OilP");
+        assert_eq!(
+            this.target_resolved.as_deref(),
+            Some("Root.Sensors.OilP"),
+            "This-relative target must resolve to the documented symbol"
+        );
+        // An absolute `Root.…` target that names a documented symbol resolves too.
+        assert_eq!(
+            by_path("Root.Sensors.AliasAbs").target_resolved.as_deref(),
+            Some("Root.Sensors.OilP")
+        );
+        // A target that does not name any documented symbol stays raw (no link).
+        let dangling = by_path("Root.Sensors.Dangling");
+        assert_eq!(dangling.target_raw, "Nowhere.X");
+        assert_eq!(
+            dangling.target_resolved, None,
+            "an off-model target must not be resolved into a dangling link"
+        );
+        // A reference with no Target declares an empty raw target, never invented.
+        let none = by_path("Root.Sensors.NoTarget");
+        assert_eq!(none.target_raw, "");
+        assert_eq!(none.target_resolved, None);
+        assert!(!none.anchor.is_empty(), "references participate in anchors");
     }
 }

@@ -30,6 +30,15 @@ and hover permalinks, a responsive layout with dark mode, client-side search ove
 every symbol/function/table/enum, a security legend, and live filtering of rows
 by security level and tag.
 
+**Cross-references.** Each group page lists its `BuiltIn.Reference` aliases in a
+`## References` table showing what each one points at (its `<Props Target>`). A
+`This`/`Parent`/`Root`-relative or absolute target that names a documented symbol
+is deep-linked, and the symbol gets a reverse `## Used by` entry so you can see
+who consumes it. A target that doesn't resolve to a documented symbol is shown
+verbatim rather than linked — the reference is never dropped and a link is never
+invented (some firmware-supplied sensor references point at runtime-internal
+values that the project file doesn't declare).
+
 ## Machine-readable JSON
 
 `--format json` writes a single `m1-doc.json` — the whole `DocModel` as structured
@@ -46,14 +55,16 @@ never invented.
 
 Top-level: `{ schema_version, title, target_hardware, groups[], enums[] }`. Each
 group carries `path`, its `symbols`, `functions`, `tables`, `objects`,
-`can_messages`, and the paths of its immediate `children`. A symbol carries
-`path`, `anchor`, `kind` (`channel`/`parameter`/`constant`), `type_label`,
+`can_messages`, `references`, and the paths of its immediate `children`. A symbol
+carries `path`, `anchor`, `kind` (`channel`/`parameter`/`constant`), `type_label`,
 `quantity`, `unit`, `base_unit`, `log_rate_hz`, `security`, `enum_ref`,
 `classname`, and `tags`; a function
 carries its `inputs` (`{name, type}`), `return_type`, `annotations`,
 `call_rate_hz`, and `source_path`; tables carry `axes` and `output_unit`; enums
 carry `members`, `default`, and `open`; CAN messages carry `id`, `dlc`, and
-their `signals`.
+their `signals`; a reference carries `path`, `anchor`, `target_raw`, and
+`target_resolved` (the canonical symbol path when it resolves to one, else
+`null`).
 
 ## Publishing to GitHub Pages
 
