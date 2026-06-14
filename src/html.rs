@@ -1029,7 +1029,7 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
 <script>{script}</script>\
 </body>\
 </html>",
-                title = model.title,
+                title = html_escape(&model.title),
                 style = STYLE,
                 script = SCRIPT,
             );
@@ -1557,6 +1557,32 @@ mod tests {
         assert!(
             page.body.contains(".permalink") && page.body.contains("tr.filtered"),
             "permalink / filter CSS must be inline in the shell"
+        );
+    }
+
+    // The page title is user-controlled (the `--title` flag, or the project's
+    // parent directory name). HTML metacharacters in it must be escaped before
+    // they reach the raw `<title>...</title>` in the head, the same way every
+    // other text node in the shell is escaped — otherwise a title like
+    // `A <b> & "C"` produces malformed/unescaped HTML on every generated page.
+    #[test]
+    fn title_with_html_metacharacters_is_escaped_in_head() {
+        let mut model = demo_model();
+        model.title = "A <b> & \"C\"".into();
+        let files = render_html(&model);
+        let page = files
+            .iter()
+            .find(|f| f.path == "Root.Engine.html")
+            .expect("Root.Engine.html missing");
+        assert!(
+            page.body.contains("<title>A &lt;b&gt; &amp;"),
+            "title metacharacters must be escaped in <title>; got head:\n{}",
+            &page.body[..page.body.len().min(400)]
+        );
+        // The raw, unescaped tag must NOT leak into the head.
+        assert!(
+            !page.body.contains("<title>A <b>"),
+            "raw unescaped <b> leaked into the page <title>"
         );
     }
 }
