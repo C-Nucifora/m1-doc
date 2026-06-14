@@ -93,6 +93,27 @@ pub struct SymbolDoc {
     pub security: Option<String>,
 }
 
+/// One input axis of a calibration table: its breakpoint count and (when the
+/// `.m1cfg` declares one) engineering unit.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TableAxisDoc {
+    pub size: u32,
+    pub unit: Option<String>,
+}
+
+/// One documented `BuiltIn.Table` calibration map. `axes` is in X, Y, Z order
+/// (`axes.len()` is the table's dimension) and is empty when no `.m1cfg` was
+/// loaded — the table is still listed by name, its shape just unknown.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TableDoc {
+    pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]).
+    pub anchor: String,
+    pub axes: Vec<TableAxisDoc>,
+    /// Unit of the interpolated output value (the table body), when known.
+    pub output_unit: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SymbolDocKind {
     #[default]
@@ -122,6 +143,8 @@ pub struct GroupDoc {
     pub symbols: Vec<SymbolDoc>,
     /// Functions and methods declared directly in this group, sorted by path.
     pub functions: Vec<FunctionDoc>,
+    /// Calibration tables declared directly in this group, sorted by path.
+    pub tables: Vec<TableDoc>,
     /// Full paths of the immediate child groups, sorted. Empty for a leaf group.
     pub children: Vec<String>,
 }

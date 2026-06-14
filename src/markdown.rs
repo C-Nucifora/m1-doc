@@ -1,7 +1,9 @@
 //! Renders a [`DocModel`] to Markdown: one file per group plus an `index.md`.
 //! This is the canonical output; the HTML renderer (P3) consumes these files.
 
-use crate::model::{AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
+use crate::model::{
+    AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableDoc,
+};
 use std::fmt::Write as _;
 
 /// A rendered file: a project-relative path and its Markdown body.
@@ -107,6 +109,31 @@ fn render_function(f: &FunctionDoc) -> String {
     out
 }
 
+/// Render one calibration table entry: an anchored `### <path>` heading and a
+/// dimensionality line — e.g. `2-D table — 16 (rpm) × 12 (kPa) → deg`. When the
+/// shape is unknown (no `.m1cfg` loaded), say so rather than dropping the table.
+fn render_table(t: &TableDoc) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", t.anchor);
+    let _ = writeln!(out, "### {}\n", t.path);
+    if t.axes.is_empty() {
+        let _ = writeln!(out, "Table — shape requires a loaded `.m1cfg`\n");
+    } else {
+        let axes = t
+            .axes
+            .iter()
+            .map(|a| match &a.unit {
+                Some(u) => format!("{} ({u})", a.size),
+                None => a.size.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" × ");
+        let output = t.output_unit.as_deref().unwrap_or("—");
+        let _ = writeln!(out, "{}-D table — {axes} → {output}\n", t.axes.len());
+    }
+    out
+}
+
 fn render_group(group: &GroupDoc) -> String {
     let mut out = String::new();
     // Breadcrumb of ancestor links, then the page heading.
@@ -164,6 +191,12 @@ fn render_group(group: &GroupDoc) -> String {
         }
         out.push('\n');
     }
+    if !group.tables.is_empty() {
+        let _ = writeln!(out, "## Tables\n");
+        for t in &group.tables {
+            out.push_str(&render_table(t));
+        }
+    }
     if !group.functions.is_empty() {
         let _ = writeln!(out, "## Functions\n");
         for f in &group.functions {
@@ -209,7 +242,9 @@ pub fn render(model: &DocModel) -> Vec<RenderedFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
+    use crate::model::{
+        DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
+    };
 
     fn sample() -> DocModel {
         DocModel {
@@ -225,6 +260,7 @@ mod tests {
                     ..Default::default()
                 }],
                 functions: vec![],
+                tables: vec![],
                 children: vec![],
             }],
         }
@@ -255,6 +291,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                tables: vec![],
                 children: vec![],
             }],
         }
@@ -299,6 +336,7 @@ mod tests {
                     ..Default::default()
                 }],
                 functions: vec![],
+                tables: vec![],
                 children: vec![],
             }],
         }
@@ -408,6 +446,7 @@ mod tests {
                     ],
                     ..Default::default()
                 }],
+                tables: vec![],
                 children: vec![],
             }],
         };
@@ -455,6 +494,7 @@ mod tests {
                     annotations: vec![],
                     ..Default::default()
                 }],
+                tables: vec![],
                 children: vec![],
             }],
         };
@@ -522,6 +562,7 @@ mod tests {
                     },
                 ],
                 functions: vec![],
+                tables: vec![],
                 children: vec![],
             }],
         };
@@ -543,6 +584,76 @@ mod tests {
             page.body
                 .contains("| Name | Type | Quantity | Unit | Base | Log rate | Security |"),
             "table header missing new columns; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn group_page_renders_tables_section_with_dimensionality(/* #26 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                tables: vec![TableDoc {
+                    path: "Root.Engine.IgnitionMap".into(),
+                    anchor: "root-engine-ignitionmap".into(),
+                    axes: vec![
+                        TableAxisDoc {
+                            size: 16,
+                            unit: Some("rpm".into()),
+                        },
+                        TableAxisDoc {
+                            size: 12,
+                            unit: Some("kPa".into()),
+                        },
+                    ],
+                    output_unit: Some("deg".into()),
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(page.body.contains("## Tables"), "got:\n{}", page.body);
+        assert!(
+            page.body.contains("### Root.Engine.IgnitionMap"),
+            "got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("2-D table — 16 (rpm) × 12 (kPa) → deg"),
+            "dimensionality line wrong; got:\n{}",
+            page.body
+        );
+        // Tables are anchored like every other entity (#24).
+        assert!(
+            page.body.contains("<a id=\"root-engine-ignitionmap\"></a>"),
+            "table anchor missing; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn table_without_cfg_metadata_is_still_listed(/* #26 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                tables: vec![TableDoc {
+                    path: "Root.Engine.FuelMap".into(),
+                    anchor: "root-engine-fuelmap".into(),
+                    axes: vec![],
+                    output_unit: None,
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body.contains("### Root.Engine.FuelMap")
+                && page.body.contains("shape requires a loaded `.m1cfg`"),
+            "unshaped table must still be listed; got:\n{}",
             page.body
         );
     }
@@ -627,6 +738,7 @@ mod tests {
                     anchor: "root-engine-update".into(),
                     ..Default::default()
                 }],
+                tables: vec![],
                 children: vec![],
             }],
         };
@@ -666,6 +778,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                tables: vec![],
                 children: vec![],
             }],
         };

@@ -5,7 +5,8 @@
 //! node so the full tree is navigable.
 
 use crate::model::{
-    AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, anchor_slug,
+    AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableAxisDoc,
+    TableDoc, anchor_slug,
 };
 use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind};
@@ -55,6 +56,31 @@ fn function_doc(sym: &Symbol) -> FunctionDoc {
         return_type,
         annotations: Vec::new(),
         call_rate_hz: sym.call_rate_hz,
+    }
+}
+
+/// Build a [`TableDoc`] from a `BuiltIn.Table` symbol. Axis sizes/units and the
+/// output unit come from `table_meta` (populated when a `.m1cfg` is loaded);
+/// with no cfg the axes are empty and the table is still documented by name.
+fn table_doc(sym: &Symbol) -> TableDoc {
+    let (axes, output_unit) = match &sym.table_meta {
+        Some(meta) => (
+            meta.axes
+                .iter()
+                .map(|a| TableAxisDoc {
+                    size: a.size,
+                    unit: a.unit.clone(),
+                })
+                .collect(),
+            meta.output_unit.clone(),
+        ),
+        None => (Vec::new(), None),
+    };
+    TableDoc {
+        path: sym.path.clone(),
+        anchor: anchor_slug(&sym.path),
+        axes,
+        output_unit,
     }
 }
 
@@ -278,6 +304,8 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
             group.symbols.push(symbol_doc(sym, kind));
         } else if is_function(sym.kind) {
             group.functions.push(function_doc(sym));
+        } else if matches!(sym.kind, SymbolKind::Table) {
+            group.tables.push(table_doc(sym));
         }
     }
     // Wire each node into its parent's `children` list.
@@ -296,6 +324,7 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
     for g in &mut groups {
         g.symbols.sort_by(|a, b| a.path.cmp(&b.path));
         g.functions.sort_by(|a, b| a.path.cmp(&b.path));
+        g.tables.sort_by(|a, b| a.path.cmp(&b.path));
         g.children.sort();
         assign_anchors(g);
     }
@@ -319,6 +348,9 @@ fn assign_anchors(group: &mut GroupDoc) {
     }
     for f in &mut group.functions {
         f.anchor = unique(&f.path);
+    }
+    for t in &mut group.tables {
+        t.anchor = unique(&t.path);
     }
 }
 
@@ -624,6 +656,34 @@ mod tests {
             "Root.Engine should link its child group; got {:?}",
             eng.children
         );
+    }
+
+    #[test]
+    fn table_is_collected_and_listed_even_without_cfg_metadata() {
+        // A BuiltIn.Table with no .m1cfg loaded: table_meta is None, so the
+        // shape is unknown — but the table must still be documented (#26), not
+        // silently dropped the way doc_kind drops it.
+        const TBL: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.Table" Name="Root.Engine.IgnitionMap"/>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+        let model = build_model(&Project::from_xml(TBL).unwrap(), "Demo".into());
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        let tbl = eng
+            .tables
+            .iter()
+            .find(|t| t.path == "Root.Engine.IgnitionMap")
+            .expect("table must be collected");
+        assert!(tbl.axes.is_empty(), "no cfg → no axis shape");
+        assert!(!tbl.anchor.is_empty(), "table participates in anchors");
     }
 
     #[test]
