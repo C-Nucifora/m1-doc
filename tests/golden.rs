@@ -53,9 +53,19 @@ fn golden_index() {
     let out = render_fixture();
     let expected = "# Synth Fixture\n\
 \n\
-## Groups\n\
+**Target hardware:** — *(not exposed by the project API yet)*\n\
 \n\
-- [Root](Root.md)\n\
+6 components · 3 channels · 1 constant · 1 table · 1 object · 1 enum · 1 top-level group\n\
+\n\
+## Structure\n\
+\n\
+- [Root](Root.md) (6) ▸\n\
+\n\
+## Security levels\n\
+\n\
+Access level required to view or calibrate a value. Levels present in this project:\n\
+\n\
+- **Tune** — tunable at the Tune access level\n\
 \n\
 ## Reference\n\
 \n\
@@ -82,14 +92,14 @@ fn golden_representative_group_page() {
 \n\
 | Name | Type | Quantity | Unit | Base | Log rate | Security |\n\
 | --- | --- | --- | --- | --- | --- | --- |\n\
-| <a id=\"root-engine-speed\"></a>`Root.Engine.Speed` | f32 | AngularVelocity | rpm | AngularVelocity | — | Tune |\n\
-| <a id=\"root-engine-state\"></a>`Root.Engine.State` | [::This.Drive State](enums.md#drive-state) | — | — | — | — | — |\n\
+| <a id=\"root-engine-speed\" class=\"m1-row-anchor\" data-security=\"Tune\"></a>`Root.Engine.Speed` | f32 | AngularVelocity | rpm | AngularVelocity | — | Tune |\n\
+| <a id=\"root-engine-state\" class=\"m1-row-anchor\"></a>`Root.Engine.State` | [::This.Drive State](enums.md#drive-state) | — | — | — | — | — |\n\
 \n\
 ## Constants\n\
 \n\
 | Name | Type | Quantity | Unit | Base | Log rate | Security |\n\
 | --- | --- | --- | --- | --- | --- | --- |\n\
-| <a id=\"root-engine-maxrpm\"></a>`Root.Engine.MaxRpm` | u16 | — | — | — | — | — |\n\
+| <a id=\"root-engine-maxrpm\" class=\"m1-row-anchor\"></a>`Root.Engine.MaxRpm` | u16 | — | — | — | — | — |\n\
 \n\
 ## Tables\n\
 \n\
@@ -115,7 +125,7 @@ fn golden_deep_group_page_with_breadcrumb_and_object() {
 \n\
 | Name | Type | Quantity | Unit | Base | Log rate | Security |\n\
 | --- | --- | --- | --- | --- | --- | --- |\n\
-| <a id=\"root-engine-fuel-pump-demand\"></a>`Root.Engine.Fuel.Pump.Demand` | f32 | — | % | — | — | — |\n\
+| <a id=\"root-engine-fuel-pump-demand\" class=\"m1-row-anchor\"></a>`Root.Engine.Fuel.Pump.Demand` | f32 | — | % | — | — | — |\n\
 \n\
 ## Objects\n\
 \n\

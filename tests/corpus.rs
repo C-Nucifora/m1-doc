@@ -84,8 +84,8 @@ fn corpus_generates_clean_deterministic_docs() {
         .map(|(_, b)| b)
         .expect("index.md must be written");
     assert!(
-        index.len() > 64 && index.contains("## Groups"),
-        "index.md should be a non-trivial Groups index; got:\n{index}"
+        index.len() > 64 && index.contains("## Structure"),
+        "index.md should be a non-trivial structure index; got:\n{index}"
     );
     let page_count = files_a.iter().filter(|(n, _)| n != "index.md").count();
     assert!(
