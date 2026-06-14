@@ -39,6 +39,28 @@ verbatim rather than linked — the reference is never dropped and a link is nev
 invented (some firmware-supplied sensor references point at runtime-internal
 values that the project file doesn't declare).
 
+## Relationship graph
+
+m1-doc builds a **relationship graph** of the project — which functions call
+which, and what each reads and writes — from the parsed `.m1scr` bodies (call
+sites, `In`/referenced channels, `Out`/assignment targets) plus the
+`BuiltIn.Reference` aliases. Only edges whose endpoints resolve to documented
+symbols are kept; dynamic or unresolved targets are dropped rather than guessed.
+
+Every group page renders its relationships as an **interactive force-directed
+graph** (a `## Relationships` section): nodes are the group's functions and
+signals, sized by how connected they are and coloured by their owning group;
+edges are typed (call, read, write, reference) and styled accordingly. Drag a
+node, scroll to zoom, hover for details, click the legend to mute a community, or
+click a node to jump to its documentation. The renderer is a small inline canvas
+script — **no library, no CDN, no network fetch** — so the graph works from
+`file://` and GitHub Pages just like the rest of the site. The canonical Markdown
+embeds the same graph as a ` ```mermaid ` block, which GitHub renders natively.
+
+`--graph <group>` additionally emits a focused **subsystem page** for one group
+path (e.g. `--graph Root.Engine`) covering its whole subtree; `--graph-depth <N>`
+(default 1) sets how many hops the view expands across the group's boundary.
+
 ## Machine-readable JSON
 
 `--format json` writes a single `m1-doc.json` — the whole `DocModel` as structured
@@ -53,7 +75,12 @@ deterministic — generating twice yields a byte-identical file — with stable
 object-key order and arrays in the loader's sorted order. Missing data is `null`,
 never invented.
 
-Top-level: `{ schema_version, title, target_hardware, groups[], enums[] }`. Each
+Top-level: `{ schema_version, title, target_hardware, groups[], enums[], graph }`.
+The `graph` is the project relationship graph as `{ edges[] }`, each edge
+`{ from, to, kind }` where `kind` is `call`/`read`/`write`/`reference` and the
+endpoints are documented symbol paths (nodes are those symbols themselves) — the
+substrate for the knowledge-graph workflow and external call/data-flow tooling.
+Each
 group carries `path`, its `symbols`, `functions`, `tables`, `objects`,
 `can_messages`, `references`, and the paths of its immediate `children`. A symbol
 carries `path`, `anchor`, `kind` (`channel`/`parameter`/`constant`), `type_label`,
