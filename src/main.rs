@@ -1,4 +1,5 @@
 mod diagram;
+mod escape;
 mod graph;
 mod html;
 mod json;

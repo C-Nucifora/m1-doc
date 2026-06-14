@@ -293,28 +293,11 @@ fn mermaid_label(s: &str) -> String {
 }
 
 /// Encode a string as a JSON string literal (quoted, with the control/quote
-/// escapes needed inside an inline `<script type="application/json">`). `<` and
-/// `/` are escaped so the payload can never close the embedding element early.
+/// escapes needed inside an inline `<script type="application/json">`). The
+/// script-close hardening (`<` `>` `/`) keeps the payload from closing the
+/// embedding element early. See [`crate::escape::escape_json_string`].
 fn js(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '<' => out.push_str("\\u003c"),
-            '/' => out.push_str("\\/"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    crate::escape::escape_json_string(s, true)
 }
 
 #[cfg(test)]
@@ -465,7 +448,8 @@ mod tests {
     #[test]
     fn js_escapes_script_close_and_controls() {
         assert_eq!(js("a/b"), "\"a\\/b\"");
-        assert_eq!(js("<x>"), "\"\\u003cx>\"");
+        // `>` is now hardened too (unified on the shared script-safe escaper).
+        assert_eq!(js("<x>"), "\"\\u003cx\\u003e\"");
         assert!(js("a\nb").contains("\\n"));
     }
 }
