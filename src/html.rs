@@ -172,26 +172,14 @@ struct SearchEntry {
     href: String,
 }
 
-/// Minimal JSON-string escaping for the inline index: the characters that would
-/// break a `"…"` literal or an inline `<script>` block. We deliberately escape
-/// `<`/`/` (as `<` / `\/`) so the JSON can never contain a literal
-/// `</script>` that would close the embedding element early.
+/// Minimal JSON-string escaping for the inline index: returns the *unquoted*
+/// inner content (callers supply the surrounding `"`). Uses the shared
+/// script-safe escaper so `<`/`>`/`/` can never form a literal `</script>` that
+/// would close the embedding element early. See
+/// [`crate::escape::escape_json_into`].
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '<' => out.push_str("\\u003c"),
-            '>' => out.push_str("\\u003e"),
-            '/' => out.push_str("\\/"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
+    crate::escape::escape_json_into(&mut out, s, true);
     out
 }
 

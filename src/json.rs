@@ -348,25 +348,11 @@ impl Writer {
 
 /// Append `s` to `out` as a correctly-escaped JSON string (with surrounding
 /// quotes). Escapes the JSON control set plus `"`/`\\`, and emits `\uXXXX` for
-/// the remaining C0 control characters so the output is always valid JSON.
+/// the remaining C0 control characters so the output is always valid JSON. This
+/// is the standalone `index.json` writer, so no script-close hardening is
+/// applied. See [`crate::escape::escape_json_quoted`].
 fn write_json_string(out: &mut String, s: &str) {
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
+    crate::escape::escape_json_quoted(out, s, false);
 }
 
 #[cfg(test)]
