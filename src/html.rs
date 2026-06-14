@@ -778,6 +778,7 @@ mod tests {
                 tables: vec![],
                 objects: vec![],
                 can_messages: vec![],
+                references: vec![],
                 children: vec![],
             }],
         }
@@ -919,6 +920,7 @@ mod tests {
             groups: vec![
                 GroupDoc {
                     path: "Root".into(),
+                    references: vec![],
                     children: vec!["Root.Engine".into()],
                     ..Default::default()
                 },

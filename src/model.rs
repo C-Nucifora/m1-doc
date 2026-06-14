@@ -212,6 +212,27 @@ impl SymbolDocKind {
     }
 }
 
+/// One `BuiltIn.Reference` component — an alias that points at another symbol
+/// or path via its `.m1prj` `<Props Target="…">` (#29). The target is captured
+/// verbatim by m1-typecheck and never resolved there; the loader resolves the
+/// `This`/`Parent`/`Root`-relative and absolute forms to a canonical symbol
+/// path *only* when that path is a documented symbol — otherwise the raw string
+/// is shown as-is (degrade, never invent a dangling link).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReferenceDoc {
+    pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]).
+    pub anchor: String,
+    /// The `<Props Target>` string verbatim (e.g. `This.Value`, `Root.Engine.Speed`).
+    /// Always shown so the reader sees exactly what the project declares.
+    pub target_raw: String,
+    /// The target resolved to a canonical symbol path, set **only** when it
+    /// resolves to a symbol present in this model (so the renderer can link it
+    /// and build the inverse "used by"). `None` for unresolvable or off-model
+    /// targets — the raw string is shown instead.
+    pub target_resolved: Option<String>,
+}
+
 /// One node in the group tree — a group at any depth (`Root`, `Root.Engine`,
 /// `Root.Engine.Fuel.Pump`), the symbols/functions declared **directly** under
 /// it, and the full paths of its **immediate** child groups. Each node gets its
@@ -229,6 +250,9 @@ pub struct GroupDoc {
     pub objects: Vec<ObjectDoc>,
     /// CAN message frames declared directly in this group, sorted by path (#28).
     pub can_messages: Vec<CanMessageDoc>,
+    /// `BuiltIn.Reference` aliases declared directly in this group, sorted by
+    /// path (#29).
+    pub references: Vec<ReferenceDoc>,
     /// Full paths of the immediate child groups, sorted. Empty for a leaf group.
     pub children: Vec<String>,
 }
