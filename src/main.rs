@@ -35,6 +35,15 @@ struct Args {
     /// Embed each function's script body in a collapsible block (off by default).
     #[arg(long)]
     include_source: bool,
+    /// Scope generation to symbols at these security levels (comma-separated,
+    /// e.g. `Tune,Calibration`) — a calibration-focused subset. Non-matching
+    /// symbols, and functions/tables/objects/CAN, are omitted (#34).
+    #[arg(long, value_name = "LEVELS")]
+    only_security: Option<String>,
+    /// Scope generation to symbols carrying this tag (#34). Combine with
+    /// `--only-security` to intersect both filters.
+    #[arg(long, value_name = "TAG")]
+    only_tag: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -81,13 +90,27 @@ fn main() {
             .unwrap_or_else(|| "M1 Project".into())
     });
 
-    let model = match loader::load(&project_path, title) {
+    let mut model = match loader::load(&project_path, title) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("m1-doc: {}: {e}", project_path.display());
             process::exit(1);
         }
     };
+
+    // Scoped generation (#34): narrow the model to the requested security
+    // level(s) and/or tag before rendering, so every output format reflects the
+    // same subset. Applied once, on the model, so Markdown/HTML/JSON agree.
+    let only_security: Option<Vec<String>> = args.only_security.as_deref().map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
+    if only_security.is_some() || args.only_tag.is_some() {
+        model.retain_scoped(only_security.as_deref(), args.only_tag.as_deref());
+    }
 
     if let Err(e) = std::fs::create_dir_all(&args.out) {
         eprintln!("m1-doc: {}: {e}", args.out.display());

@@ -137,6 +137,8 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind, table: &SymbolTable) -> SymbolD
         // Base slug; `assign_anchors` resolves any page collisions.
         anchor: anchor_slug(&sym.path),
         kind,
+        // Inherited tags (own + ancestor-group), as m1-typecheck unions them (#34).
+        tags: sym.tags.clone(),
         type_label,
         quantity: sym.qty.clone(),
         unit,
@@ -435,6 +437,13 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
     let enums = collect_enums(table);
     DocModel {
         title,
+        // The m1-typecheck `Project` API exposes neither `<Project Name>` nor
+        // `TargetHardware`, so we cannot fill this without re-parsing the
+        // `.m1prj` (which the data contract forbids here). The landing page
+        // degrades to a note rather than inventing a value (#32). Tracked
+        // upstream: expose `Name`/`TargetHardware` on `Project` so the title
+        // default improves and this stops being `None`.
+        target_hardware: None,
         groups,
         enums,
     }
@@ -1135,6 +1144,43 @@ mod tests {
         assert!(
             model.groups.iter().all(|g| g.path != "Bus.EngineData"),
             "no synthetic group should be created at the message path"
+        );
+    }
+
+    /// #34: a symbol's tags (own + inherited from its ancestor groups) must be
+    /// carried onto the `SymbolDoc` so the renderer can build the tag facet and
+    /// filter. A group-level `Tags=` is inherited by its members.
+    #[test]
+    fn symbol_tags_are_surfaced_including_inherited() {
+        const TAGGED: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"><Props SelectedTags="engine"/></Component>
+   <Component Classname="BuiltIn.Channel" Name="Root.Engine.Speed"><Props Type="f32" SelectedTags="speed"/></Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+        let model = build_model(&Project::from_xml(TAGGED).unwrap(), "Demo".into());
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        let speed = eng
+            .symbols
+            .iter()
+            .find(|s| s.path == "Root.Engine.Speed")
+            .expect("speed channel");
+        assert!(
+            speed.tags.contains(&"speed".to_string()) && speed.tags.contains(&"engine".to_string()),
+            "own + inherited group tags must be surfaced; got {:?}",
+            speed.tags
+        );
+        // The facet collapses to the sorted, deduped union.
+        assert_eq!(
+            model.tags(),
+            vec!["engine".to_string(), "speed".to_string()]
         );
     }
 
