@@ -91,14 +91,48 @@ fn rewrite_md_links(html: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn build_nav(model: &DocModel) -> String {
+    use std::collections::BTreeMap;
+    let by_path: BTreeMap<&str, &crate::model::GroupDoc> =
+        model.groups.iter().map(|g| (g.path.as_str(), g)).collect();
+
     let mut nav = String::from("<nav><h2>Navigation</h2>");
     nav.push_str("<a href=\"index.html\">Index</a>");
+    nav.push_str("<ul>");
+    // Start the tree from the forest roots (groups whose parent is not itself a
+    // documented group); descend recursively. The interactive collapse widget
+    // is the HTML-polish issue (#33); this is the nested structure it needs.
     for g in &model.groups {
-        let filename = format!("{}.html", g.path);
-        nav.push_str(&format!("<a href=\"{filename}\">{path}</a>", path = g.path));
+        let parent = match g.path.rfind('.') {
+            Some(i) => &g.path[..i],
+            None => "",
+        };
+        if parent.is_empty() || !by_path.contains_key(parent) {
+            push_nav_node(&mut nav, g, &by_path);
+        }
     }
-    nav.push_str("</nav>");
+    nav.push_str("</ul></nav>");
     nav
+}
+
+/// Append one `<li>` for a group node and, recursively, a nested `<ul>` for its
+/// children — reflecting the real group hierarchy in the sidebar.
+fn push_nav_node(
+    nav: &mut String,
+    g: &crate::model::GroupDoc,
+    by_path: &std::collections::BTreeMap<&str, &crate::model::GroupDoc>,
+) {
+    let label = g.path.rsplit('.').next().unwrap_or(&g.path);
+    nav.push_str(&format!("<li><a href=\"{}.html\">{}</a>", g.path, label));
+    if !g.children.is_empty() {
+        nav.push_str("<ul>");
+        for child in &g.children {
+            if let Some(cg) = by_path.get(child.as_str()) {
+                push_nav_node(nav, cg, by_path);
+            }
+        }
+        nav.push_str("</ul>");
+    }
+    nav.push_str("</li>");
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +218,7 @@ mod tests {
                     ..Default::default()
                 }],
                 functions: vec![],
+                children: vec![],
             }],
         }
     }

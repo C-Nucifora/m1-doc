@@ -112,13 +112,18 @@ impl SymbolDocKind {
     }
 }
 
-/// One top-level group page (e.g. `Root.Engine`) and the symbols under it.
+/// One node in the group tree — a group at any depth (`Root`, `Root.Engine`,
+/// `Root.Engine.Fuel.Pump`), the symbols/functions declared **directly** under
+/// it, and the full paths of its **immediate** child groups. Each node gets its
+/// own page; descendants live on their own pages, reachable via [`Self::children`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GroupDoc {
     pub path: String,
     pub symbols: Vec<SymbolDoc>,
-    /// Functions and methods declared in this group, sorted by path.
+    /// Functions and methods declared directly in this group, sorted by path.
     pub functions: Vec<FunctionDoc>,
+    /// Full paths of the immediate child groups, sorted. Empty for a leaf group.
+    pub children: Vec<String>,
 }
 
 /// The whole project's documentation, groups sorted by path.

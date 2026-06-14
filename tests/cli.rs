@@ -200,11 +200,23 @@ fn generates_markdown_for_a_project() {
         .assert()
         .success();
 
+    // The index links the forest root (Root); the tree is reachable by
+    // descending from there.
     let index = std::fs::read_to_string(out.join("index.md")).unwrap();
+    assert!(index.contains("[Root](Root.md)"), "index:\n{index}");
+
+    // The root page lists Engine as a sub-group (descend into the tree).
+    let root = std::fs::read_to_string(out.join("Root.md")).unwrap();
     assert!(
-        index.contains("[Root.Engine](Root.Engine.md)"),
-        "index:\n{index}"
+        root.contains("## Sub-groups") && root.contains("[Engine](Root.Engine.md)"),
+        "root page:\n{root}"
     );
+
+    // The engine page documents its direct member and carries a breadcrumb.
     let page = std::fs::read_to_string(out.join("Root.Engine.md")).unwrap();
     assert!(page.contains("Root.Engine.Speed"), "page:\n{page}");
+    assert!(
+        page.contains("[Root](Root.md) › Engine"),
+        "breadcrumb missing:\n{page}"
+    );
 }

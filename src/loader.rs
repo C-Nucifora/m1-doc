@@ -1,6 +1,8 @@
 //! Builds a [`DocModel`] from a loaded m1-typecheck project. Channels,
-//! parameters, and constants are grouped by their top-level group
-//! (`Root.Engine` for `Root.Engine.Speed`).
+//! parameters, constants, and functions are placed on their *immediate* parent
+//! group at whatever depth (`Root.Engine.Fuel.Pump` for
+//! `Root.Engine.Fuel.Pump.Demand`), and every ancestor group becomes its own
+//! node so the full tree is navigable.
 
 use crate::model::{
     AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, anchor_slug,
@@ -9,13 +11,13 @@ use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind};
 use std::collections::BTreeMap;
 
-/// The top-level group a symbol's docs belong on: the first two dot-segments
-/// (`Root.Engine`), or the whole path when it has fewer than two.
-fn top_level_group(path: &str) -> String {
-    let mut it = path.split('.');
-    match (it.next(), it.next()) {
-        (Some(a), Some(b)) => format!("{a}.{b}"),
-        _ => path.to_string(),
+/// The parent group of a path: everything up to (not including) the last
+/// dot-segment. `Root.Engine.Speed` → `Root.Engine`; `Root.Engine` → `Root`;
+/// `Root` → `""` (a forest root, no parent group).
+fn parent_group(path: &str) -> &str {
+    match path.rfind('.') {
+        Some(i) => &path[..i],
+        None => "",
     }
 }
 
@@ -241,29 +243,60 @@ pub fn load(
 }
 
 /// Build the documentation model from a project, with `title` for the index.
+/// Ensure a group node exists for `path`, creating every ancestor group up the
+/// chain (`Root.Engine.Fuel` also creates `Root.Engine` and `Root`) so the tree
+/// is fully connected even through groups that hold no direct members.
+fn ensure_group(groups: &mut BTreeMap<String, GroupDoc>, path: &str) {
+    if path.is_empty() || groups.contains_key(path) {
+        return;
+    }
+    groups.insert(
+        path.to_string(),
+        GroupDoc {
+            path: path.to_string(),
+            ..GroupDoc::default()
+        },
+    );
+    let parent = parent_group(path).to_string();
+    ensure_group(groups, &parent);
+}
+
 pub fn build_model(project: &Project, title: String) -> DocModel {
     let mut groups: BTreeMap<String, GroupDoc> = BTreeMap::new();
     for sym in project.symbols().iter() {
-        let group_path = top_level_group(&sym.path);
+        // A documented member lives on its *parent* group's page — the path
+        // minus its own leaf segment — at whatever depth that is.
+        let parent = parent_group(&sym.path).to_string();
+        if parent.is_empty() {
+            continue; // a bare top-level name with no enclosing group
+        }
+        ensure_group(&mut groups, &parent);
         let group = groups
-            .entry(group_path.clone())
-            .or_insert_with(|| GroupDoc {
-                path: group_path,
-                symbols: Vec::new(),
-                functions: Vec::new(),
-            });
+            .get_mut(&parent)
+            .expect("ensure_group just created it");
         if let Some(kind) = doc_kind(sym.kind) {
             group.symbols.push(symbol_doc(sym, kind));
         } else if is_function(sym.kind) {
             group.functions.push(function_doc(sym));
         }
     }
-    // Deterministic order: groups by path (BTreeMap), symbols and functions by
-    // path within.
+    // Wire each node into its parent's `children` list.
+    let paths: Vec<String> = groups.keys().cloned().collect();
+    for path in &paths {
+        let parent = parent_group(path);
+        if !parent.is_empty()
+            && let Some(p) = groups.get_mut(parent)
+        {
+            p.children.push(path.clone());
+        }
+    }
+    // Deterministic order: groups by path (BTreeMap), members and children
+    // sorted within each node.
     let mut groups: Vec<GroupDoc> = groups.into_values().collect();
     for g in &mut groups {
         g.symbols.sort_by(|a, b| a.path.cmp(&b.path));
         g.functions.sort_by(|a, b| a.path.cmp(&b.path));
+        g.children.sort();
         assign_anchors(g);
     }
     DocModel { title, groups }
@@ -305,18 +338,11 @@ mod tests {
 </MoTeCM1BuildSession>"#;
 
     #[test]
-    fn top_level_group_single_segment() {
-        assert_eq!(top_level_group("Root"), "Root");
-    }
-
-    #[test]
-    fn top_level_group_two_segments() {
-        assert_eq!(top_level_group("Root.Engine"), "Root.Engine");
-    }
-
-    #[test]
-    fn top_level_group_deep_path() {
-        assert_eq!(top_level_group("Root.Engine.Gain.Value"), "Root.Engine");
+    fn parent_group_strips_the_leaf_segment() {
+        assert_eq!(parent_group("Root.Engine.Speed"), "Root.Engine");
+        assert_eq!(parent_group("Root.Engine.Gain.Value"), "Root.Engine.Gain");
+        assert_eq!(parent_group("Root.Engine"), "Root");
+        assert_eq!(parent_group("Root"), "");
     }
 
     #[test]
@@ -339,6 +365,7 @@ mod tests {
                 path: "Root.Engine.Oil.Temp".into(),
                 ..Default::default()
             }],
+            ..Default::default()
         };
         assign_anchors(&mut group);
         assert_eq!(group.symbols[0].anchor, "root-engine-oil-temp");
@@ -555,9 +582,10 @@ mod tests {
     }
 
     #[test]
-    fn groups_channels_and_params_under_their_top_level_group() {
+    fn nests_members_under_their_immediate_parent_group() {
         let project = Project::from_xml(PROJECT).unwrap();
         let model = build_model(&project, "Demo".into());
+        // The channel sits directly on Root.Engine.
         let eng = model
             .groups
             .iter()
@@ -570,13 +598,73 @@ mod tests {
             "channel with unit; got {:?}",
             eng.symbols
         );
+        // The deeper parameter `Root.Engine.Gain.Value` is NOT hoisted to
+        // Root.Engine — it lives on its own parent-group page Root.Engine.Gain.
         assert!(
-            eng.symbols.iter().any(
+            !eng.symbols
+                .iter()
+                .any(|s| s.path == "Root.Engine.Gain.Value"),
+            "deeper member must not be hoisted to the 2-segment group"
+        );
+        let gain = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine.Gain")
+            .expect("Root.Engine.Gain group should exist as its own node");
+        assert!(
+            gain.symbols.iter().any(
                 |s| s.kind == SymbolDocKind::Parameter && s.security.as_deref() == Some("Tune")
             ),
-            "parameter with security; got {:?}",
-            eng.symbols
+            "parameter with security on its parent group; got {:?}",
+            gain.symbols
         );
+        // Root.Engine lists Root.Engine.Gain as a child group.
+        assert!(
+            eng.children.iter().any(|c| c == "Root.Engine.Gain"),
+            "Root.Engine should link its child group; got {:?}",
+            eng.children
+        );
+    }
+
+    #[test]
+    fn deep_nesting_produces_a_node_per_level_with_parent_child_links() {
+        // A channel five segments deep: Root.A.B.C.D.Speed. Every ancestor group
+        // (Root, Root.A, Root.A.B, Root.A.B.C, Root.A.B.C.D) must exist as its
+        // own node, chained parent→child, with the member on the deepest one.
+        const DEEP: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.Channel" Name="Root.A.B.C.D.Speed"><Props Type="f32"/></Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+        let model = build_model(&Project::from_xml(DEEP).unwrap(), "Demo".into());
+        let node = |p: &str| model.groups.iter().find(|g| g.path == p);
+
+        for level in ["Root", "Root.A", "Root.A.B", "Root.A.B.C", "Root.A.B.C.D"] {
+            assert!(node(level).is_some(), "missing group page for {level}");
+        }
+        // Parent→child links chain down the tree.
+        assert_eq!(node("Root").unwrap().children, vec!["Root.A".to_string()]);
+        assert_eq!(
+            node("Root.A").unwrap().children,
+            vec!["Root.A.B".to_string()]
+        );
+        assert_eq!(
+            node("Root.A.B.C").unwrap().children,
+            vec!["Root.A.B.C.D".to_string()]
+        );
+        // The deepest group is a leaf (no child groups) and owns the member.
+        let leaf = node("Root.A.B.C.D").unwrap();
+        assert!(leaf.children.is_empty(), "deepest node has no child groups");
+        assert!(
+            leaf.symbols.iter().any(|s| s.path == "Root.A.B.C.D.Speed"),
+            "member lands on the deepest group; got {:?}",
+            leaf.symbols
+        );
+        // The shallower groups hold no direct members — they're pure structure.
+        assert!(node("Root.A.B").unwrap().symbols.is_empty());
     }
 
     /// A `BuiltIn.Constant` component must be collected as `SymbolDocKind::Constant`
