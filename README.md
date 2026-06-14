@@ -12,9 +12,9 @@ m1-doc --project path/to/Project.m1prj --out site --format both
 ```
 
 `--project` defaults to the nearest `Project.m1prj` upward (or `$M1_PROJECT`).
-`--format` is `markdown`, `html`, or `both` (default). Markdown is the canonical
-output; HTML is rendered from it (so the two never diverge) into a self-contained
-site.
+`--format` is `markdown`, `html`, `both` (default), or `json`. Markdown is the
+canonical output; HTML is rendered from it (so the two never diverge) into a
+self-contained site.
 
 **Scoped generation.** `--only-security Tune,Calibration` restricts the output to
 symbols at the given access level(s); `--only-tag <tag>` restricts to symbols
@@ -29,6 +29,30 @@ hardware, group tree), a collapsible nav tree with an in-page table of contents
 and hover permalinks, a responsive layout with dark mode, client-side search over
 every symbol/function/table/enum, a security legend, and live filtering of rows
 by security level and tag.
+
+## Machine-readable JSON
+
+`--format json` writes a single `doc.json` — the whole `DocModel` as structured
+data, the same information the Markdown and HTML renderers show. It is the
+substrate for programmatic consumers: editor tooling, dashboards, doc-diffing,
+external search, and CI checks (e.g. "does every tunable parameter declare a
+unit?").
+
+The document has a top-level integer `schema_version` (currently `1`); bump it
+on any breaking shape change so consumers can gate on it. Output is
+deterministic — generating twice yields a byte-identical file — with stable
+object-key order and arrays in the loader's sorted order. Missing data is `null`,
+never invented.
+
+Top-level: `{ schema_version, title, groups[], enums[] }`. Each group carries
+`path`, its `symbols`, `functions`, `tables`, `objects`, `can_messages`, and the
+paths of its immediate `children`. A symbol carries `path`, `anchor`, `kind`
+(`channel`/`parameter`/`constant`), `type_label`, `quantity`, `unit`,
+`base_unit`, `log_rate_hz`, `security`, `enum_ref`, and `classname`; a function
+carries its `inputs` (`{name, type}`), `return_type`, `annotations`,
+`call_rate_hz`, and `source_path`; tables carry `axes` and `output_unit`; enums
+carry `members`, `default`, and `open`; CAN messages carry `id`, `dlc`, and
+their `signals`.
 
 ## Publishing to GitHub Pages
 
