@@ -32,7 +32,7 @@ by security level and tag.
 
 ## Machine-readable JSON
 
-`--format json` writes a single `doc.json` — the whole `DocModel` as structured
+`--format json` writes a single `m1-doc.json` — the whole `DocModel` as structured
 data, the same information the Markdown and HTML renderers show. It is the
 substrate for programmatic consumers: editor tooling, dashboards, doc-diffing,
 external search, and CI checks (e.g. "does every tunable parameter declare a

@@ -52,12 +52,12 @@ enum Format {
     Markdown,
     Html,
     Both,
-    /// A single machine-readable `doc.json` of the whole model (#35).
+    /// A single machine-readable `m1-doc.json` of the whole model (#35).
     Json,
 }
 
 /// Filename of the machine-readable JSON document (#35).
-const JSON_FILE: &str = "doc.json";
+const JSON_FILE: &str = "m1-doc.json";
 
 /// Resolve the project path: explicit `--project`, then `$M1_PROJECT`, then the
 /// nearest `Project.m1prj` upward from the cwd.
