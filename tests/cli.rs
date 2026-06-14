@@ -61,6 +61,64 @@ fn format_both_writes_md_and_html() {
     );
 }
 
+// #35: `--format json` writes a single structured `doc.json` for the project,
+// with a versioned schema and a known symbol's metadata, and is deterministic.
+#[test]
+fn format_json_writes_deterministic_doc_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let prj = dir.path().join("Project.m1prj");
+    std::fs::write(&prj, FIXTURE_XML).unwrap();
+
+    // Run `--format json` into a fresh out dir and return the `doc.json` body.
+    let run = |out: &std::path::Path| -> String {
+        Command::cargo_bin("m1-doc")
+            .unwrap()
+            .args([
+                "--project",
+                prj.to_str().unwrap(),
+                "--out",
+                out.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success();
+        std::fs::read_to_string(out.join("doc.json")).unwrap()
+    };
+
+    let first = run(&dir.path().join("a"));
+
+    // Single JSON file written; no Markdown/HTML alongside it.
+    let out_a = dir.path().join("a");
+    assert!(out_a.join("doc.json").exists(), "doc.json missing");
+    assert!(
+        !out_a.join("index.md").exists() && !out_a.join("index.html").exists(),
+        "--format json must write only doc.json"
+    );
+
+    // Versioned schema + the known channel and its display unit are present.
+    assert!(
+        first.contains("\"schema_version\": 1"),
+        "missing schema_version; got:\n{first}"
+    );
+    assert!(
+        first.contains("\"path\": \"Root.Engine.Speed\""),
+        "missing known symbol path; got:\n{first}"
+    );
+    assert!(
+        first.contains("\"unit\": \"rpm\""),
+        "missing symbol unit metadata; got:\n{first}"
+    );
+    assert!(
+        first.contains("\"kind\": \"channel\""),
+        "missing symbol kind; got:\n{first}"
+    );
+
+    // Determinism: a second run into a different dir is byte-identical.
+    let second = run(&dir.path().join("b"));
+    assert_eq!(first, second, "JSON output must be deterministic");
+}
+
 #[test]
 fn format_html_writes_html_only() {
     let dir = tempfile::tempdir().unwrap();

@@ -1,4 +1,5 @@
 mod html;
+mod json;
 mod loader;
 mod markdown;
 mod model;
@@ -51,7 +52,12 @@ enum Format {
     Markdown,
     Html,
     Both,
+    /// A single machine-readable `doc.json` of the whole model (#35).
+    Json,
 }
+
+/// Filename of the machine-readable JSON document (#35).
+const JSON_FILE: &str = "doc.json";
 
 /// Resolve the project path: explicit `--project`, then `$M1_PROJECT`, then the
 /// nearest `Project.m1prj` upward from the cwd.
@@ -152,6 +158,15 @@ fn main() {
             for f in &html::render(&md_files, &model) {
                 write_file(&args.out, f);
             }
+        }
+        Format::Json => {
+            write_file(
+                &args.out,
+                &markdown::RenderedFile {
+                    path: JSON_FILE.to_string(),
+                    body: json::render(&model),
+                },
+            );
         }
     }
 }
