@@ -1,3 +1,5 @@
+mod diagram;
+mod graph;
 mod html;
 mod json;
 mod loader;
@@ -45,6 +47,14 @@ struct Args {
     /// `--only-security` to intersect both filters.
     #[arg(long, value_name = "TAG")]
     only_tag: Option<String>,
+    /// Also emit a focused subsystem-graph page for this group path (e.g.
+    /// `Root.Engine`): an interactive call/data-flow diagram of the whole
+    /// subtree under the group (#37).
+    #[arg(long, value_name = "GROUP")]
+    graph: Option<String>,
+    /// Hops the `--graph` subsystem expands across its boundary (default 1).
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    graph_depth: usize,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -128,6 +138,10 @@ fn main() {
     let render_opts = markdown::RenderOptions {
         source_base: args.source_base,
         include_source: args.include_source,
+        graph: args.graph.map(|group| markdown::GraphSpec {
+            group,
+            depth: args.graph_depth,
+        }),
     };
     let md_files = markdown::render_with(&model, &render_opts);
 

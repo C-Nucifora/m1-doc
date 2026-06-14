@@ -325,6 +325,12 @@ pub fn load(
 
     let mut model = build_model(&project, title);
 
+    // Relationship graph (#37): call/read/write edges from the parsed scripts,
+    // plus the reference edges from the model's resolved aliases (#29). Built
+    // before the early return below so a project whose functions carry no script
+    // filenames still gets its reference edges.
+    model.graph = crate::graph::build_graph(&project, &parsed, &model);
+
     // Build a map of function path -> script filename from the project symbols.
     // Only function/method symbols carry a filename.
     let path_to_filename: BTreeMap<String, String> = project
@@ -463,6 +469,9 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
         target_hardware: None,
         groups,
         enums,
+        // The relationship graph needs the parsed scripts, which only `load`
+        // has; it fills this in. `build_model` (symbols-only) leaves it empty.
+        graph: crate::model::ProjectGraph::default(),
     }
 }
 
@@ -1333,5 +1342,97 @@ mod tests {
         assert_eq!(none.target_raw, "");
         assert_eq!(none.target_resolved, None);
         assert!(!none.anchor.is_empty(), "references participate in anchors");
+    }
+
+    /// #37: the relationship graph extracts a call edge (one function invoking
+    /// another), a read edge (a function reading a channel), a write edge (a
+    /// function writing a channel), and a reference edge (#29's alias) — each
+    /// resolved to a documented symbol; locals and `Out` produce no edge.
+    #[test]
+    fn graph_extracts_call_read_write_and_reference_edges() {
+        use crate::model::EdgeKind;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj = dir.path().join("Project.m1prj");
+        fs::write(
+            &prj,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.Channel" Name="Root.Engine.Speed"><Props Type="f32"/></Component>
+   <Component Classname="BuiltIn.Channel" Name="Root.Engine.Output"><Props Type="f32"/></Component>
+   <Component Classname="BuiltIn.FuncUser" Filename="Helper.m1scr" Name="Root.Engine.Helper"/>
+   <Component Classname="BuiltIn.FuncUser" Filename="Update.m1scr" Name="Root.Engine.Update"/>
+   <Component Classname="BuiltIn.Reference" Name="Root.Engine.Alias"><Props Target="This.Speed"/></Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+        // Update calls Helper, reads Speed, writes Output, and uses a local +
+        // `Out` (neither of which must produce an edge).
+        fs::write(
+            dir.path().join("Update.m1scr"),
+            "local tmp = Root.Engine.Speed;\nRoot.Engine.Output = Root.Engine.Helper(tmp);\nOut = tmp;\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("Helper.m1scr"), "Out = In.X;\n").unwrap();
+
+        let model = load(&prj, "Demo".into()).unwrap();
+        let has = |from: &str, to: &str, kind: EdgeKind| {
+            model
+                .graph
+                .edges
+                .iter()
+                .any(|e| e.from == from && e.to == to && e.kind == kind)
+        };
+
+        assert!(
+            has("Root.Engine.Update", "Root.Engine.Helper", EdgeKind::Call),
+            "missing call edge; got {:?}",
+            model.graph.edges
+        );
+        assert!(
+            has("Root.Engine.Update", "Root.Engine.Speed", EdgeKind::Read),
+            "missing read edge; got {:?}",
+            model.graph.edges
+        );
+        assert!(
+            has("Root.Engine.Update", "Root.Engine.Output", EdgeKind::Write),
+            "missing write edge; got {:?}",
+            model.graph.edges
+        );
+        assert!(
+            has(
+                "Root.Engine.Alias",
+                "Root.Engine.Speed",
+                EdgeKind::Reference
+            ),
+            "missing reference edge; got {:?}",
+            model.graph.edges
+        );
+        // `Out` and the local `tmp` must not appear as edge targets — they don't
+        // resolve to documented symbols (degrade, never fake).
+        assert!(
+            !model
+                .graph
+                .edges
+                .iter()
+                .any(|e| e.to == "Out" || e.to == "tmp"),
+            "Out / local must not produce edges; got {:?}",
+            model.graph.edges
+        );
+        // Edges are sorted+deduped: no duplicate (from,to,kind) triple.
+        let mut seen = std::collections::HashSet::new();
+        for e in &model.graph.edges {
+            assert!(
+                seen.insert((&e.from, &e.to, e.kind)),
+                "duplicate edge {e:?}"
+            );
+        }
     }
 }

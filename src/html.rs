@@ -5,8 +5,10 @@
 //! a [`crate::model::DocModel`] (for the sidebar and page title).  No m1-core /
 //! m1-typecheck types cross this module boundary.
 
+use crate::diagram::Diagram;
 use crate::markdown::RenderedFile;
 use crate::model::{DocModel, SymbolDocKind};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Internal CSS
@@ -120,6 +122,31 @@ tr.filtered{display:none}
   nav.collapsed ul,nav.collapsed>a{display:none}
   main{padding:1rem 1.25rem 2rem}
 }
+/* #37 interactive relationship graph (force-directed canvas, self-contained) */
+.m1-graph{border:1px solid var(--border);border-radius:6px;margin:1rem 0;
+          overflow:hidden;background:var(--pre-bg)}
+.m1-graph-head{display:flex;justify-content:space-between;align-items:center;
+          gap:1rem;padding:.45rem .75rem;border-bottom:1px solid var(--border);
+          flex-wrap:wrap}
+.m1-graph-title{font-weight:600}
+.m1-graph-hint{color:var(--muted);font-size:.8rem;margin-left:auto}
+.m1-graph-reset{padding:.2rem .55rem;border:1px solid var(--border);
+          border-radius:4px;background:var(--nav-bg);color:var(--fg);
+          cursor:pointer;font-size:.8rem}
+.m1-graph-stage{position:relative;height:520px;touch-action:none}
+.m1-graph-stage canvas{display:block;width:100%;height:100%;cursor:grab}
+.m1-graph-tip{position:absolute;pointer-events:none;background:var(--bg);
+          color:var(--fg);border:1px solid var(--border);border-radius:4px;
+          padding:.3rem .5rem;font-size:.8rem;max-width:24rem;z-index:2;
+          box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.m1-graph-tip .k{color:var(--muted)}
+.m1-graph-legend{display:flex;flex-wrap:wrap;gap:.3rem .9rem;padding:.5rem .75rem;
+          border-top:1px solid var(--border);font-size:.8rem}
+.m1-graph-legend .lg{display:flex;align-items:center;gap:.35rem;cursor:pointer;
+          user-select:none}
+.m1-graph-legend .lg.off{opacity:.4}
+.m1-graph-legend .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.m1-graph-empty{padding:1rem .75rem;color:var(--muted);font-style:italic}
 "#;
 
 // ---------------------------------------------------------------------------
@@ -475,14 +502,273 @@ function initButtons(){
   if(m)m.addEventListener("click",function(){
     var nav=document.querySelector("nav");if(nav)nav.classList.toggle("collapsed");});
 }
+// ---- #37 interactive relationship graph (force-directed, no library/CDN) ----
+function cssVar(name,fb){var v=getComputedStyle(document.documentElement)
+  .getPropertyValue(name).trim();return v||fb;}
+function initGraphs(){
+  var figs=document.querySelectorAll("figure.m1-graph");
+  for(var i=0;i<figs.length;i++){try{buildGraph(figs[i]);}catch(e){}}
+}
+function buildGraph(fig){
+  var dataEl=fig.querySelector(".m1-graph-data");if(!dataEl)return;
+  var data=JSON.parse(dataEl.textContent);
+  var nodes=data.nodes||[],edges=data.edges||[];
+  var canvas=fig.querySelector("canvas");if(!canvas||!nodes.length)return;
+  var stage=fig.querySelector(".m1-graph-stage"),tip=fig.querySelector(".m1-graph-tip");
+  var ctx=canvas.getContext("2d");
+  var byId={};nodes.forEach(function(n){byId[n.id]=n;});
+  edges.forEach(function(e){e.a=byId[e.from];e.b=byId[e.to];});
+  var nbr={};nodes.forEach(function(n){nbr[n.id]={};});
+  edges.forEach(function(e){if(e.a&&e.b){nbr[e.a.id][e.b.id]=1;nbr[e.b.id][e.a.id]=1;}});
+  var hidden={};
+  var EC={call:cssVar("--fn","#4078f2"),read:cssVar("--str","#50a14f"),
+          write:cssVar("--num","#986801"),reference:cssVar("--muted","#888")};
+  function theme(){return{bg:cssVar("--pre-bg","#0f0f1a"),fg:cssVar("--fg","#e0e0e0"),
+          muted:cssVar("--muted","#888"),border:cssVar("--border","#333")};}
+  var N=nodes.length;
+  nodes.forEach(function(n,i){var a=i/N*6.2832;n.x=Math.cos(a)*150+(i%7);
+    n.y=Math.sin(a)*150+(i%5);n.vx=0;n.vy=0;n.r=6+Math.min(20,(n.degree||0)*2.2);});
+  var view={s:1,ox:0,oy:0},W=0,H=0,DPR=window.devicePixelRatio||1;
+  function resize(){W=stage.clientWidth;H=stage.clientHeight;
+    canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+"px";
+    canvas.style.height=H+"px";}
+  var alpha=1,running=false,dragNode=null,panning=false,last={x:0,y:0},moved=false;
+  var hover=null,sel=null;
+  function vis(n){return !hidden[n.community];}
+  function tick(){
+    var a=nodes.filter(vis),i,j;
+    for(i=0;i<a.length;i++){var p=a[i];for(j=i+1;j<a.length;j++){var q=a[j];
+      var dx=p.x-q.x,dy=p.y-q.y,d2=dx*dx+dy*dy+0.01,d=Math.sqrt(d2),f=1800/d2;
+      var fx=dx/d*f,fy=dy/d*f;p.vx+=fx;p.vy+=fy;q.vx-=fx;q.vy-=fy;}}
+    edges.forEach(function(e){if(!e.a||!e.b||!vis(e.a)||!vis(e.b))return;
+      var dx=e.b.x-e.a.x,dy=e.b.y-e.a.y,d=Math.sqrt(dx*dx+dy*dy)+0.01;
+      var f=(d-90)*0.04,fx=dx/d*f,fy=dy/d*f;
+      e.a.vx+=fx;e.a.vy+=fy;e.b.vx-=fx;e.b.vy-=fy;});
+    a.forEach(function(n){if(n===dragNode)return;n.vx+=-n.x*0.015;n.vy+=-n.y*0.015;
+      n.vx*=0.82;n.vy*=0.82;n.x+=n.vx*alpha;n.y+=n.vy*alpha;});
+    alpha*=0.985;
+  }
+  function fit(){var a=nodes.filter(vis);if(!a.length)return;
+    var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;a.forEach(function(n){x0=Math.min(x0,n.x-n.r);
+      y0=Math.min(y0,n.y-n.r);x1=Math.max(x1,n.x+n.r);y1=Math.max(y1,n.y+n.r);});
+    var gw=x1-x0||1,gh=y1-y0||1,s=Math.min(W/(gw+60),H/(gh+60),2.2);
+    view.s=s;view.ox=W/2-(x0+x1)/2*s;view.oy=H/2-(y0+y1)/2*s;}
+  function S(n){return{x:n.x*view.s+view.ox,y:n.y*view.s+view.oy};}
+  function world(px,py){return{x:(px-view.ox)/view.s,y:(py-view.oy)/view.s};}
+  function arrow(p,q,col,rr){var dx=q.x-p.x,dy=q.y-p.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+    var ux=dx/d,uy=dy/d,tx=q.x-ux*(rr+1),ty=q.y-uy*(rr+1),k=6;ctx.fillStyle=col;
+    ctx.beginPath();ctx.moveTo(tx,ty);
+    ctx.lineTo(tx-ux*k-uy*k*0.6,ty-uy*k+ux*k*0.6);
+    ctx.lineTo(tx-ux*k+uy*k*0.6,ty-uy*k-ux*k*0.6);ctx.closePath();ctx.fill();}
+  function draw(){
+    var T=theme(),f=sel||hover;
+    ctx.setTransform(DPR,0,0,DPR,0,0);ctx.fillStyle=T.bg;ctx.fillRect(0,0,W,H);
+    edges.forEach(function(e){if(!e.a||!e.b||!vis(e.a)||!vis(e.b))return;
+      var p=S(e.a),q=S(e.b),on=f?(e.a===f||e.b===f):true;ctx.globalAlpha=on?0.8:0.1;
+      ctx.strokeStyle=EC[e.kind]||T.muted;ctx.lineWidth=e.kind==="write"?2.2:1.3;
+      ctx.setLineDash(e.kind==="read"?[5,4]:e.kind==="reference"?[2,3]:[]);
+      ctx.beginPath();ctx.moveTo(p.x,p.y);
+      ctx.quadraticCurveTo((p.x+q.x)/2,(p.y+q.y)/2,q.x,q.y);ctx.stroke();
+      if(on)arrow(p,q,EC[e.kind]||T.muted,e.b.r*view.s);});
+    ctx.setLineDash([]);ctx.globalAlpha=1;
+    nodes.forEach(function(n){if(!vis(n))return;var p=S(n),r=n.r*view.s;
+      var dim=f&&!(n===f||nbr[f.id][n.id]);ctx.globalAlpha=dim?0.18:1;
+      ctx.beginPath();ctx.arc(p.x,p.y,r,0,6.2832);ctx.fillStyle=n.color;ctx.fill();
+      ctx.lineWidth=n===f?2.5:(n.primary?1.5:1);
+      ctx.strokeStyle=n===f?T.fg:(n.primary?T.fg:T.border);
+      if(!n.primary&&n!==f)ctx.globalAlpha=dim?0.12:0.55;ctx.stroke();
+      ctx.globalAlpha=dim?0.25:1;
+      if(view.s>0.55||n===hover||n===sel){ctx.fillStyle=T.fg;
+        ctx.font="11px ui-monospace,monospace";ctx.textAlign="center";
+        ctx.textBaseline="top";ctx.fillText(n.label,p.x,p.y+r+2);}});
+    ctx.globalAlpha=1;
+  }
+  function frame(){if(alpha>0.02){tick();tick();}draw();
+    if(alpha>0.02)requestAnimationFrame(frame);else running=false;}
+  function start(){if(!running){running=true;requestAnimationFrame(frame);}}
+  function heat(v){alpha=Math.max(alpha,v||0.5);start();}
+  function pick(px,py){var best=null,bd=1e9;nodes.forEach(function(n){if(!vis(n))return;
+    var p=S(n),dx=p.x-px,dy=p.y-py,d=dx*dx+dy*dy,rr=n.r*view.s+4;
+    if(d<rr*rr&&d<bd){bd=d;best=n;}});return best;}
+  function rel(ev){var b=canvas.getBoundingClientRect();
+    return{x:ev.clientX-b.left,y:ev.clientY-b.top};}
+  canvas.addEventListener("mousedown",function(ev){var m=rel(ev),n=pick(m.x,m.y);
+    moved=false;last=m;if(n)dragNode=n;else panning=true;});
+  window.addEventListener("mousemove",function(ev){
+    if(dragNode){var m=rel(ev),w=world(m.x,m.y);dragNode.x=w.x;dragNode.y=w.y;
+      moved=true;heat(0.25);return;}
+    if(panning){var m2=rel(ev);view.ox+=m2.x-last.x;view.oy+=m2.y-last.y;last=m2;
+      moved=true;draw();return;}
+    if(ev.target!==canvas){return;}
+    var m3=rel(ev),h=pick(m3.x,m3.y);
+    if(h!==hover){hover=h;if(!running)draw();}
+    if(h){tip.hidden=false;tip.innerHTML="<b>"+escTok(h.id)+"</b><br><span class='k'>"
+      +escTok(h.community)+" · degree "+h.degree+"</span>";
+      var tx=m3.x+14;if(tx+tip.offsetWidth>W)tx=m3.x-tip.offsetWidth-14;
+      tip.style.left=tx+"px";tip.style.top=(m3.y+14)+"px";canvas.style.cursor="pointer";}
+    else{tip.hidden=true;canvas.style.cursor="";}});
+  window.addEventListener("mouseup",function(){
+    if(dragNode&&!moved){if(dragNode.href){window.location.href=dragNode.href;}
+      else{sel=sel===dragNode?null:dragNode;draw();}}
+    else if(panning&&!moved){sel=null;draw();}
+    dragNode=null;panning=false;});
+  canvas.addEventListener("wheel",function(ev){ev.preventDefault();var m=rel(ev),
+    w=world(m.x,m.y),k=ev.deltaY<0?1.12:0.89;view.s*=k;
+    view.ox=m.x-w.x*view.s;view.oy=m.y-w.y*view.s;if(!running)draw();},{passive:false});
+  var legend=fig.querySelector(".m1-graph-legend");
+  if(legend&&data.communities){data.communities.forEach(function(c){
+    var el=document.createElement("span");el.className="lg";
+    el.innerHTML="<span class='dot' style='background:"+c.color+"'></span>"+escTok(c.name);
+    el.addEventListener("click",function(){hidden[c.name]=!hidden[c.name];
+      el.classList.toggle("off",!!hidden[c.name]);heat(0.6);});
+    legend.appendChild(el);});}
+  var rb=fig.querySelector(".m1-graph-reset");
+  if(rb)rb.addEventListener("click",function(){fit();heat(0.6);});
+  // Repaint on theme change so canvas colours track light/dark.
+  new MutationObserver(function(){if(!running)draw();}).observe(
+    document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+  if("ResizeObserver"in window)
+    new ResizeObserver(function(){resize();if(!running){fit();draw();}}).observe(stage);
+  resize();fit();start();
+}
 function init(){
   initNav();initButtons();initPermalinks();initToc();
-  initSearch();initFilters();highlightM1();
+  initSearch();initFilters();highlightM1();initGraphs();
 }
 if(document.readyState!=="loading"){init();}
 else{document.addEventListener("DOMContentLoaded",init);}
 })();
 "##;
+
+// ---------------------------------------------------------------------------
+// Relationship-graph widgets (#37)
+// ---------------------------------------------------------------------------
+//
+// The Markdown renderer drops a sentinel comment + a ` ```mermaid ` fallback
+// block for each graph (so the canonical `.md` renders a diagram on GitHub).
+// Here, in the HTML, we swap that pair for the interactive force-directed
+// widget: a `<canvas>` plus an inline JSON payload the page's `buildGraph`
+// renders with no library and no network. The diagram is regenerated from the
+// model's graph using the sentinel's `mode:depth:group`, so the two outputs
+// always agree.
+
+/// Map every documented symbol / function / reference path to its page link
+/// (`<group>.html#<anchor>`), so a graph node can deep-link to where it is
+/// documented. Built once from the model.
+fn node_hrefs(model: &DocModel) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for g in &model.groups {
+        let page = format!("{}.html", g.path);
+        for s in &g.symbols {
+            map.insert(s.path.clone(), format!("{page}#{}", s.anchor));
+        }
+        for f in &g.functions {
+            map.insert(f.path.clone(), format!("{page}#{}", f.anchor));
+        }
+        for r in &g.references {
+            map.insert(r.path.clone(), format!("{page}#{}", r.anchor));
+        }
+    }
+    map
+}
+
+/// Rebuild the diagram a sentinel refers to. `mode` is `group` (seed on the
+/// group's direct members) or `subtree` (the whole `--graph` subsystem).
+fn diagram_for(model: &DocModel, mode: &str, group: &str, depth: usize) -> Diagram {
+    match mode {
+        "subtree" => Diagram::subsystem(&model.graph, group, depth),
+        _ => {
+            let members: Vec<&str> = model
+                .groups
+                .iter()
+                .find(|g| g.path == group)
+                .map(|g| {
+                    g.symbols
+                        .iter()
+                        .map(|s| s.path.as_str())
+                        .chain(g.functions.iter().map(|f| f.path.as_str()))
+                        .chain(g.references.iter().map(|r| r.path.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Diagram::for_group(&model.graph, &members, group, depth)
+        }
+    }
+}
+
+/// The `<figure>` markup for one diagram: the canvas stage, the legend slot, and
+/// the inline JSON the renderer consumes. An edge-less diagram degrades to a
+/// note rather than an empty canvas.
+fn graph_figure(diagram: &Diagram, hrefs: &HashMap<String, String>) -> String {
+    if diagram.is_empty() {
+        return format!(
+            "<figure class=\"m1-graph\"><div class=\"m1-graph-empty\">No documented \
+relationships{}.</div></figure>",
+            if diagram.title.is_empty() {
+                String::new()
+            } else {
+                format!(" for {}", html_escape(&diagram.title))
+            }
+        );
+    }
+    let json = diagram.to_json(|p| hrefs.get(p).cloned());
+    format!(
+        "<figure class=\"m1-graph\">\
+<div class=\"m1-graph-head\">\
+<span class=\"m1-graph-title\">{title}</span>\
+<span class=\"m1-graph-hint\">drag · scroll to zoom · click a node to open its page</span>\
+<button class=\"m1-graph-reset\" type=\"button\">Fit</button>\
+</div>\
+<div class=\"m1-graph-stage\"><canvas></canvas><div class=\"m1-graph-tip\" hidden></div></div>\
+<div class=\"m1-graph-legend\"></div>\
+<script type=\"application/json\" class=\"m1-graph-data\">{json}</script>\
+</figure>",
+        title = html_escape(&diagram.title),
+    )
+}
+
+/// Minimal HTML-text escaping for figure titles.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Replace every `<!--m1-graph:mode:depth:group-->` sentinel (and the Mermaid
+/// `<pre>` block pulldown-cmark rendered right after it) with the interactive
+/// graph figure. Other content is untouched.
+fn swap_graphs(html: &str, model: &DocModel, hrefs: &HashMap<String, String>) -> String {
+    const OPEN: &str = "<!--m1-graph:";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(pos) = rest.find(OPEN) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + OPEN.len()..];
+        let Some(close) = after.find("-->") else {
+            // Malformed — emit verbatim and stop scanning.
+            out.push_str(&rest[pos..]);
+            return out;
+        };
+        let spec = &after[..close];
+        // mode:depth:group  (group may contain ':'? paths use '.', so splitn is safe)
+        let mut it = spec.splitn(3, ':');
+        let mode = it.next().unwrap_or("group");
+        let depth: usize = it.next().and_then(|d| d.parse().ok()).unwrap_or(1);
+        let group = it.next().unwrap_or("");
+        // Advance past the comment, then past the trailing Mermaid <pre> block.
+        let mut tail = &after[close + 3..];
+        if let Some(ps) = tail.find("<pre>")
+            && let Some(pe) = tail[ps..].find("</pre>")
+        {
+            tail = &tail[ps + pe + "</pre>".len()..];
+        }
+        let diagram = diagram_for(model, mode, group, depth);
+        out.push_str(&graph_figure(&diagram, hrefs));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
 
 // ---------------------------------------------------------------------------
 // Link rewriting
@@ -690,6 +976,8 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
     let toolbar = build_toolbar();
     let filters = build_filters(model);
     let search_index = build_search_index_el(model);
+    // Node → page-link map for the interactive relationship graphs (#37).
+    let graph_hrefs = node_hrefs(model);
     markdown_files
         .iter()
         .map(|f| {
@@ -699,7 +987,11 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
                 pulldown_cmark::Parser::new_ext(&f.body, pulldown_cmark::Options::ENABLE_TABLES);
             pulldown_cmark::html::push_html(&mut fragment, parser);
 
-            // 2. Rewrite intra-doc .md links → .html links.
+            // 2. Swap relationship-graph sentinels (+ their Mermaid fallback)
+            //    for the interactive force-directed widget (#37).
+            let fragment = swap_graphs(&fragment, model, &graph_hrefs);
+
+            // 3. Rewrite intra-doc .md links → .html links.
             let fragment = rewrite_md_links(&fragment);
 
             // The row filter only belongs on a group page (one with filterable
@@ -781,12 +1073,51 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
     fn render_html(model: &DocModel) -> Vec<RenderedFile> {
         let md_files = crate::markdown::render(model);
         render(&md_files, model)
+    }
+
+    /// #37: a group with relationships renders the interactive force-graph
+    /// widget (canvas + inline JSON), and the Mermaid fallback is swapped out —
+    /// the HTML draws the diagram itself, with no library or CDN.
+    #[test]
+    fn relationships_become_self_contained_interactive_widget() {
+        use crate::model::{EdgeKind, FunctionDoc, GraphEdge, ProjectGraph};
+        let mut model = demo_model();
+        model.groups[0].functions.push(FunctionDoc {
+            path: "Root.Engine.Update".into(),
+            anchor: "root-engine-update".into(),
+            ..Default::default()
+        });
+        model.graph = ProjectGraph {
+            edges: vec![GraphEdge {
+                from: "Root.Engine.Update".into(),
+                to: "Root.Engine.Speed".into(),
+                kind: EdgeKind::Read,
+            }],
+        };
+        let files = render_html(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.html").unwrap();
+        assert!(
+            page.body.contains("<figure class=\"m1-graph\">"),
+            "interactive graph figure missing"
+        );
+        assert!(page.body.contains("<canvas>"));
+        assert!(page.body.contains("class=\"m1-graph-data\""));
+        // A node links to its documentation page (deep-link, .html rewritten).
+        assert!(page.body.contains("Root.Engine.html#root-engine-update"));
+        // The Mermaid fallback was replaced; the HTML needs no Mermaid runtime.
+        assert!(
+            !page.body.contains("language-mermaid"),
+            "Mermaid block should be swapped for the widget"
+        );
+        // Self-contained: the widget pulls nothing from the network.
+        assert!(!page.body.contains("unpkg.com") && !page.body.contains("cdn"));
     }
 
     // #24: the symbol's deterministic anchor id survives from Markdown into the
@@ -961,6 +1292,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -1059,6 +1391,7 @@ mod tests {
             &RenderOptions {
                 source_base: None,
                 include_source: true,
+                graph: None,
             },
         );
         let html = render(&md, &model);

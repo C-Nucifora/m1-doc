@@ -1,15 +1,21 @@
 //! Renders a [`DocModel`] to Markdown: one file per group plus an `index.md`.
 //! This is the canonical output; the HTML renderer (P3) consumes these files.
 
+use crate::diagram::Diagram;
 use crate::model::{
-    AnnotationDoc, CanMessageDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, ObjectDoc, SymbolDoc,
-    SymbolDocKind, TableDoc,
+    AnnotationDoc, CanMessageDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, ObjectDoc,
+    ProjectGraph, SymbolDoc, SymbolDocKind, TableDoc,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
 /// The filename of the project-wide Enums reference page.
 const ENUMS_FILE: &str = "enums.md";
+
+/// Depth of the per-group relationship graph embedded on each group page: the
+/// group's own members plus their immediate (one-hop) neighbours, so the wiring
+/// reads in context without pulling in the whole project (#37).
+const GROUP_GRAPH_DEPTH: usize = 1;
 
 /// A rendered file: a project-relative path and its Markdown body.
 pub struct RenderedFile {
@@ -29,6 +35,17 @@ pub struct RenderOptions {
     pub source_base: Option<String>,
     /// When `true`, embed each function's script body in a `<details>` block.
     pub include_source: bool,
+    /// `--graph <group>`: emit a focused subsystem-graph page for this group at
+    /// [`GraphSpec::depth`] (#37). `None` → no extra page.
+    pub graph: Option<GraphSpec>,
+}
+
+/// A `--graph <group>` request: the group path to focus and how many hops to
+/// expand across its boundary.
+#[derive(Debug, Clone)]
+pub struct GraphSpec {
+    pub group: String,
+    pub depth: usize,
 }
 
 /// `Root.Engine` -> `Root.Engine.md` (a flat, link-safe filename keyed by the
@@ -333,12 +350,16 @@ fn render_group(
     group: &GroupDoc,
     enum_anchors: &HashMap<&str, &str>,
     xrefs: &CrossRefs,
+    graph: &ProjectGraph,
     opts: &RenderOptions,
 ) -> String {
     let mut out = String::new();
     // Breadcrumb of ancestor links, then the page heading.
     let _ = writeln!(out, "{}\n", render_breadcrumb(&group.path));
     let _ = writeln!(out, "# {}\n", group.path);
+    // Relationship graph first (#37): an at-a-glance picture of what this
+    // group's members call and read/write, before the detailed tables.
+    render_relationships(&mut out, group, graph);
     // Sub-groups first so an intermediate (member-less) node is still navigable.
     if !group.children.is_empty() {
         let _ = writeln!(out, "## Sub-groups\n");
@@ -546,6 +567,64 @@ fn render_used_by(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs) {
     let _ = writeln!(out);
 }
 
+/// Emit a relationship-graph block: a sentinel comment the HTML renderer swaps
+/// for the interactive widget, followed by a ` ```mermaid ` fallback so the
+/// canonical Markdown still shows a diagram where Mermaid renders (GitHub). The
+/// blank line between the comment and the fence keeps pulldown-cmark treating
+/// the comment as a raw-HTML block and the fence as a real code block (#37).
+fn emit_graph_block(out: &mut String, mode: &str, group: &str, depth: usize, diagram: &Diagram) {
+    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{group}-->\n");
+    let _ = writeln!(out, "```mermaid");
+    out.push_str(&diagram.to_mermaid());
+    let _ = writeln!(out, "```\n");
+}
+
+/// `## Relationships` — the interactive graph of what this group's members call
+/// and read/write, seeded on the group's direct members and expanded one hop so
+/// each member's immediate neighbours show (#37). Omitted entirely when the
+/// group has no documented relationships, so a quiet page stays clean.
+fn render_relationships(out: &mut String, group: &GroupDoc, graph: &ProjectGraph) {
+    let members: Vec<&str> = group
+        .symbols
+        .iter()
+        .map(|s| s.path.as_str())
+        .chain(group.functions.iter().map(|f| f.path.as_str()))
+        .chain(group.references.iter().map(|r| r.path.as_str()))
+        .collect();
+    let diagram = Diagram::for_group(graph, &members, &group.path, GROUP_GRAPH_DEPTH);
+    if diagram.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Relationships\n");
+    emit_graph_block(out, "group", &group.path, GROUP_GRAPH_DEPTH, &diagram);
+}
+
+/// The filename of a `--graph <group>` subsystem page (`graph.root-engine.md`).
+fn graph_page_filename(group: &str) -> String {
+    format!("graph.{}.md", crate::model::anchor_slug(group))
+}
+
+/// Render the focused `--graph <group>` subsystem page: the whole subtree under
+/// the group plus `depth` hops across its boundary, as one interactive graph
+/// (#37). Always produced when requested; an edge-less group yields a note.
+fn render_graph_page(model: &DocModel, spec: &GraphSpec) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "[Index](index.md)\n");
+    let _ = writeln!(out, "# Subsystem: {}\n", spec.group);
+    let diagram = Diagram::subsystem(&model.graph, &spec.group, spec.depth);
+    if diagram.is_empty() {
+        let _ = writeln!(out, "No documented relationships under `{}`.", spec.group);
+        return out;
+    }
+    let _ = writeln!(
+        out,
+        "Calls and data flow under `{}` (depth {}).\n",
+        spec.group, spec.depth
+    );
+    emit_graph_block(&mut out, "subtree", &spec.group, spec.depth, &diagram);
+    out
+}
+
 /// Pluralise a count for the stats line: `1 channel`, `2 channels`, `0 tables`.
 fn count_phrase(n: usize, singular: &str) -> String {
     if n == 1 {
@@ -585,7 +664,7 @@ fn tag_filename(tag: &str) -> String {
     format!("tag.{}.md", crate::model::anchor_slug(tag))
 }
 
-fn render_index(model: &DocModel) -> String {
+fn render_index(model: &DocModel, opts: &RenderOptions) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}\n", model.title);
 
@@ -645,6 +724,18 @@ fn render_index(model: &DocModel) -> String {
         for tag in &tags {
             let _ = writeln!(out, "- [{tag}]({})", tag_filename(tag));
         }
+        out.push('\n');
+    }
+
+    // Focused subsystem graph, when one was requested with `--graph` (#37).
+    if let Some(spec) = &opts.graph {
+        let _ = writeln!(out, "## Subsystem graph\n");
+        let _ = writeln!(
+            out,
+            "- [Subsystem: {}]({})",
+            spec.group,
+            graph_page_filename(&spec.group)
+        );
         out.push('\n');
     }
 
@@ -750,12 +841,19 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
     let xrefs = build_cross_refs(model);
     let mut files = vec![RenderedFile {
         path: "index.md".to_string(),
-        body: render_index(model),
+        body: render_index(model, opts),
     }];
     for g in &model.groups {
         files.push(RenderedFile {
             path: group_filename(&g.path),
-            body: render_group(g, &enum_anchors, &xrefs, opts),
+            body: render_group(g, &enum_anchors, &xrefs, &model.graph, opts),
+        });
+    }
+    // Focused `--graph <group>` subsystem page (#37), when requested.
+    if let Some(spec) = &opts.graph {
+        files.push(RenderedFile {
+            path: graph_page_filename(&spec.group),
+            body: render_graph_page(model, spec),
         });
     }
     // One index page per tag (#34), in sorted tag order so the output is
@@ -779,7 +877,8 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
 mod tests {
     use super::*;
     use crate::model::{
-        DocModel, EnumDoc, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
+        DocModel, EdgeKind, EnumDoc, FunctionDoc, GraphEdge, GroupDoc, ProjectGraph, SymbolDoc,
+        SymbolDocKind, TableAxisDoc, TableDoc,
     };
 
     fn sample() -> DocModel {
@@ -804,6 +903,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -840,6 +940,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -895,6 +996,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -1043,6 +1145,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -1158,6 +1261,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1211,6 +1315,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1284,6 +1389,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1320,6 +1426,7 @@ mod tests {
                 default: Some("Off".into()),
                 open: false,
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files
@@ -1360,6 +1467,7 @@ mod tests {
                 default: None,
                 open: true,
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "enums.md").unwrap();
@@ -1395,6 +1503,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1430,6 +1539,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1468,6 +1578,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1491,6 +1602,7 @@ mod tests {
                 children: vec!["Root.Engine.Fuel.Pump".into()],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files
@@ -1531,6 +1643,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let index = &files[0];
@@ -1573,6 +1686,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1620,6 +1734,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1658,6 +1773,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
@@ -1707,6 +1823,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
@@ -1749,6 +1866,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
@@ -1787,6 +1905,7 @@ mod tests {
                 ],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
@@ -1830,6 +1949,7 @@ mod tests {
         let opts = RenderOptions {
             source_base: Some("https://github.com/UQRacing/EV-M1/blob/main/".into()),
             include_source: false,
+            graph: None,
         };
         let out = render_function(&fn_with_source(), &opts);
         assert!(
@@ -1845,6 +1965,7 @@ mod tests {
         let opts = RenderOptions {
             source_base: None,
             include_source: true,
+            graph: None,
         };
         let out = render_function(&fn_with_source(), &opts);
         assert!(
@@ -1896,6 +2017,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1947,6 +2069,7 @@ mod tests {
                 ],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files
@@ -1976,6 +2099,92 @@ mod tests {
                 .contains("[`Root.Sensors.Alias`](Root.Sensors.md#root-sensors-alias)"),
             "used-by must link the referencing alias; got:\n{}",
             page.body
+        );
+    }
+
+    // ---- #37 relationship graph ----
+
+    /// A model whose `Root.Engine.Update` function reads `Speed` and writes
+    /// `Torque` — a group with documented relationships.
+    fn graph_model() -> DocModel {
+        let mut m = sample(); // Root.Engine with the Speed channel
+        m.groups[0].symbols.push(SymbolDoc {
+            path: "Root.Engine.Torque".into(),
+            kind: SymbolDocKind::Channel,
+            type_label: "f32".into(),
+            ..Default::default()
+        });
+        m.groups[0].functions.push(FunctionDoc {
+            path: "Root.Engine.Update".into(),
+            anchor: "root-engine-update".into(),
+            ..Default::default()
+        });
+        m.graph = ProjectGraph {
+            edges: vec![
+                GraphEdge {
+                    from: "Root.Engine.Update".into(),
+                    to: "Root.Engine.Speed".into(),
+                    kind: EdgeKind::Read,
+                },
+                GraphEdge {
+                    from: "Root.Engine.Update".into(),
+                    to: "Root.Engine.Torque".into(),
+                    kind: EdgeKind::Write,
+                },
+            ],
+        };
+        m
+    }
+
+    #[test]
+    fn group_with_relationships_emits_graph_block_with_mermaid_fallback() {
+        let files = render(&graph_model());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(page.body.contains("## Relationships"));
+        assert!(
+            page.body.contains("<!--m1-graph:group:1:Root.Engine-->"),
+            "sentinel for the HTML widget missing; got:\n{}",
+            page.body
+        );
+        // The Markdown carries a Mermaid fallback for GitHub viewers.
+        assert!(page.body.contains("```mermaid"));
+        assert!(page.body.contains("-. reads .->"));
+        assert!(page.body.contains("-- writes -->"));
+    }
+
+    #[test]
+    fn group_without_relationships_has_no_graph_block() {
+        // sample() has no graph edges → no Relationships section.
+        let files = render(&sample());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(!page.body.contains("## Relationships"));
+        assert!(!page.body.contains("m1-graph"));
+    }
+
+    #[test]
+    fn graph_flag_emits_focused_subsystem_page_linked_from_index() {
+        let opts = RenderOptions {
+            source_base: None,
+            include_source: false,
+            graph: Some(GraphSpec {
+                group: "Root.Engine".into(),
+                depth: 2,
+            }),
+        };
+        let files = render_with(&graph_model(), &opts);
+        let page = files
+            .iter()
+            .find(|f| f.path == "graph.root-engine.md")
+            .expect("--graph must emit a subsystem page");
+        assert!(page.body.contains("# Subsystem: Root.Engine"));
+        assert!(page.body.contains("<!--m1-graph:subtree:2:Root.Engine-->"));
+        let index = files.iter().find(|f| f.path == "index.md").unwrap();
+        assert!(
+            index
+                .body
+                .contains("[Subsystem: Root.Engine](graph.root-engine.md)"),
+            "index must link the subsystem graph; got:\n{}",
+            index.body
         );
     }
 }
