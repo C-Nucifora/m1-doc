@@ -859,7 +859,15 @@ fn push_nav_node(
     by_path: &std::collections::BTreeMap<&str, &crate::model::GroupDoc>,
 ) {
     let label = g.path.rsplit('.').next().unwrap_or(&g.path);
-    nav.push_str(&format!("<li><a href=\"{}.html\">{}</a>", g.path, label));
+    // M1 names may contain spaces and markup-significant characters, so escape
+    // both the href (attribute context) and the visible label (text context).
+    // `attr_escape` deliberately leaves spaces verbatim so the href matches the
+    // on-disk page filename (`group_html` keeps spaces literal too).
+    nav.push_str(&format!(
+        "<li><a href=\"{}.html\">{}</a>",
+        attr_escape(&g.path),
+        html_escape(label)
+    ));
     if !g.children.is_empty() {
         nav.push_str("<ul>");
         for child in &g.children {
@@ -1133,6 +1141,51 @@ mod tests {
             page.body.contains("id=\"root-engine-speed\""),
             "expected the symbol anchor id in the HTML; got:\n{}",
             &page.body[..page.body.len().min(800)]
+        );
+    }
+
+    // The sidebar nav is hand-built raw HTML, so a group/component name with
+    // markup-significant characters (`&`, `<`, `>`, `"`) must be escaped in both
+    // the visible label and the href. M1 names permit spaces and are not
+    // restricted to alphanumerics, so this is a real corpus shape, not a
+    // synthetic one. Without escaping, `Root.A & B` would emit a raw `&`,
+    // producing a malformed entity reference and invalid HTML.
+    #[test]
+    fn nav_escapes_markup_in_component_names() {
+        let mut model = demo_model();
+        model.groups[0].path = "Root.A & B <x> \"q\"".into();
+        // The single demo symbol's path is irrelevant to the nav; keep it valid.
+        model.groups[0].symbols[0].path = "Root.A & B <x> \"q\".Speed".into();
+        let files = render_html(&model);
+        let nav = &files[0].body;
+        let nav = &nav
+            [nav.find("<nav>").expect("nav missing")..nav.find("</nav>").expect("nav end missing")];
+
+        // `&` is escaped to `&amp;`, not left raw (the raw form would be a
+        // malformed entity reference).
+        assert!(
+            nav.contains("&amp;"),
+            "nav should escape '&' to '&amp;'; got:\n{nav}"
+        );
+        assert!(
+            !nav.contains("A & B"),
+            "nav must not contain a raw, unescaped '&'; got:\n{nav}"
+        );
+        // `<` / `>` / `"` from the name must not survive as literal markup.
+        assert!(
+            nav.contains("&lt;x&gt;"),
+            "nav should escape '<x>' to '&lt;x&gt;'; got:\n{nav}"
+        );
+        assert!(
+            nav.contains("&quot;q&quot;"),
+            "nav should escape '\"q\"' to '&quot;q&quot;'; got:\n{nav}"
+        );
+        // The href path is escaped consistently with the on-disk filename
+        // (which keeps spaces verbatim — see `group_html`), so escaping `&<>"`
+        // but not spaces keeps the link pointing at the actual file.
+        assert!(
+            nav.contains("href=\"Root.A &amp; B &lt;x&gt; &quot;q&quot;.html\""),
+            "nav href should be attribute-escaped to match the page filename; got:\n{nav}"
         );
     }
 
