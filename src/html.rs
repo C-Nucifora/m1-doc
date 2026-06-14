@@ -7,7 +7,7 @@
 
 use crate::diagram::Diagram;
 use crate::markdown::RenderedFile;
-use crate::model::{DocModel, SymbolDocKind};
+use crate::model::{AnchoredKind, DocModel};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -183,97 +183,25 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// The page filename for a group path (`Root.Engine` → `Root.Engine.html`).
-fn group_html(path: &str) -> String {
-    format!("{path}.html")
-}
-
-/// A human label for a symbol kind, used in search results and the index.
-fn symbol_kind_label(kind: SymbolDocKind) -> &'static str {
-    match kind {
-        SymbolDocKind::Channel => "channel",
-        SymbolDocKind::Parameter => "parameter",
-        SymbolDocKind::Constant => "constant",
-    }
-}
-
 /// Collect every documented entity into search records, in deterministic order.
+///
+/// Built from the model's single [`DocModel::anchored_entities`] walk — the same
+/// traversal the relationship-graph node-href map uses — so the search index and
+/// the graph deep links can never again cover different subsets of the anchored
+/// kinds. The search index keeps every kind (it indexes enums too); the graph
+/// map drops enums. See `node_hrefs`.
 fn build_search_entries(model: &DocModel) -> Vec<SearchEntry> {
-    let mut out = Vec::new();
-    for g in &model.groups {
-        let page = group_html(&g.path);
-        for s in &g.symbols {
-            // Prefer the display unit, fall back to the quantity, else empty.
-            let hint = s
-                .unit
-                .clone()
-                .or_else(|| s.quantity.clone())
-                .unwrap_or_default();
-            out.push(SearchEntry {
-                path: s.path.clone(),
-                kind: symbol_kind_label(s.kind),
-                group: g.path.clone(),
-                hint,
-                href: format!("{page}#{}", s.anchor),
-            });
-        }
-        for f in &g.functions {
-            out.push(SearchEntry {
-                path: f.path.clone(),
-                kind: "function",
-                group: g.path.clone(),
-                hint: f.return_type.clone().unwrap_or_default(),
-                href: format!("{page}#{}", f.anchor),
-            });
-        }
-        for t in &g.tables {
-            out.push(SearchEntry {
-                path: t.path.clone(),
-                kind: "table",
-                group: g.path.clone(),
-                hint: t.output_unit.clone().unwrap_or_default(),
-                href: format!("{page}#{}", t.anchor),
-            });
-        }
-        for o in &g.objects {
-            out.push(SearchEntry {
-                path: o.path.clone(),
-                kind: "object",
-                group: g.path.clone(),
-                hint: o.class.clone().unwrap_or_default(),
-                href: format!("{page}#{}", o.anchor),
-            });
-        }
-        for m in &g.can_messages {
-            out.push(SearchEntry {
-                path: m.path.clone(),
-                kind: "CAN message",
-                group: g.path.clone(),
-                hint: String::new(),
-                href: format!("{page}#{}", m.anchor),
-            });
-            for sig in &m.signals {
-                out.push(SearchEntry {
-                    path: sig.path.clone(),
-                    kind: "CAN signal",
-                    group: g.path.clone(),
-                    hint: sig.unit.clone().unwrap_or_default(),
-                    href: format!("{page}#{}", sig.anchor),
-                });
-            }
-        }
-    }
-    // Enums live on the shared reference page; link to their entry there.
-    for e in &model.enums {
-        out.push(SearchEntry {
-            path: e.name.clone(),
-            kind: "enum",
-            group: "Enums".to_string(),
-            hint: String::new(),
-            href: format!("enums.html#{}", e.anchor),
-        });
-    }
-    out
+    model
+        .anchored_entities()
+        .into_iter()
+        .map(|e| SearchEntry {
+            path: e.path.to_string(),
+            kind: e.kind.label(),
+            group: e.group.to_string(),
+            hint: e.hint.to_string(),
+            href: e.href(),
+        })
+        .collect()
 }
 
 /// Render the search index as a compact inline JSON array. Deterministic order.
@@ -640,24 +568,20 @@ else{document.addEventListener("DOMContentLoaded",init);}
 // model's graph using the sentinel's `mode:depth:group`, so the two outputs
 // always agree.
 
-/// Map every documented symbol / function / reference path to its page link
+/// Map every graph-eligible documented entity's path to its page link
 /// (`<group>.html#<anchor>`), so a graph node can deep-link to where it is
-/// documented. Built once from the model.
+/// documented. Built once from the model's shared [`DocModel::anchored_entities`]
+/// walk (so it can never drift from the search index again) and filtered to the
+/// kinds that can appear as graph nodes — i.e. everything anchored on a group
+/// page (symbols, functions, tables, objects, CAN messages and signals,
+/// references); enums live on the shared reference page and are not graph nodes.
 fn node_hrefs(model: &DocModel) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for g in &model.groups {
-        let page = format!("{}.html", g.path);
-        for s in &g.symbols {
-            map.insert(s.path.clone(), format!("{page}#{}", s.anchor));
-        }
-        for f in &g.functions {
-            map.insert(f.path.clone(), format!("{page}#{}", f.anchor));
-        }
-        for r in &g.references {
-            map.insert(r.path.clone(), format!("{page}#{}", r.anchor));
-        }
-    }
-    map
+    model
+        .anchored_entities()
+        .into_iter()
+        .filter(|e| e.kind != AnchoredKind::Enum)
+        .map(|e| (e.path.to_string(), e.href()))
+        .collect()
 }
 
 /// Rebuild the diagram a sentinel refers to. `mode` is `group` (seed on the
@@ -850,7 +774,7 @@ fn push_nav_node(
     // M1 names may contain spaces and markup-significant characters, so escape
     // both the href (attribute context) and the visible label (text context).
     // `attr_escape` deliberately leaves spaces verbatim so the href matches the
-    // on-disk page filename (`group_html` keeps spaces literal too).
+    // on-disk page filename (`<group path>.html` keeps spaces literal too).
     nav.push_str(&format!(
         "<li><a href=\"{}.html\">{}</a>",
         attr_escape(&g.path),
@@ -1170,7 +1094,7 @@ mod tests {
             "nav should escape '\"q\"' to '&quot;q&quot;'; got:\n{nav}"
         );
         // The href path is escaped consistently with the on-disk filename
-        // (which keeps spaces verbatim — see `group_html`), so escaping `&<>"`
+        // (`<group path>.html`, which keeps spaces verbatim), so escaping `&<>"`
         // but not spaces keeps the link pointing at the actual file.
         assert!(
             nav.contains("href=\"Root.A &amp; B &lt;x&gt; &quot;q&quot;.html\""),
@@ -1379,6 +1303,98 @@ mod tests {
         let a = search_index_json(&rich_model());
         let b = search_index_json(&rich_model());
         assert_eq!(a, b, "search index must be byte-identical across runs");
+    }
+
+    // The graph node-href map and the search index are both built from the one
+    // `DocModel::anchored_entities` walk, so they cannot drift on which anchored
+    // kinds carry a deep link (the historical bug: `node_hrefs` covered only
+    // symbols/functions/references, silently missing any table/object/CAN node).
+    // Every graph-eligible kind must now be deep-linked, with the same href the
+    // search index uses; enums (not graph nodes) are excluded.
+    #[test]
+    fn node_hrefs_cover_every_graph_eligible_kind() {
+        use crate::model::{CanMessageDoc, CanSignalDoc, ObjectDoc, ReferenceDoc};
+        let mut model = rich_model();
+        let eng = model
+            .groups
+            .iter_mut()
+            .find(|g| g.path == "Root.Engine")
+            .unwrap();
+        eng.objects.push(ObjectDoc {
+            path: "Root.Engine.Sensor".into(),
+            anchor: "root-engine-sensor".into(),
+            ..Default::default()
+        });
+        eng.references.push(ReferenceDoc {
+            path: "Root.Engine.Alias".into(),
+            anchor: "root-engine-alias".into(),
+            ..Default::default()
+        });
+        eng.can_messages.push(CanMessageDoc {
+            path: "Root.Engine.Frame".into(),
+            anchor: "root-engine-frame".into(),
+            signals: vec![CanSignalDoc {
+                path: "Root.Engine.Frame.Rpm".into(),
+                anchor: "root-engine-frame-rpm".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        let hrefs = node_hrefs(&model);
+
+        // Symbols, functions, tables, objects, CAN messages + signals and
+        // references all resolve to their <group>.html#<anchor> page link.
+        assert_eq!(
+            hrefs.get("Root.Engine.Speed").map(String::as_str),
+            Some("Root.Engine.html#root-engine-speed")
+        );
+        assert_eq!(
+            hrefs.get("Root.Engine.Update").map(String::as_str),
+            Some("Root.Engine.html#root-engine-update")
+        );
+        assert_eq!(
+            hrefs.get("Root.Engine.Map").map(String::as_str),
+            Some("Root.Engine.html#root-engine-map"),
+            "a table node must now deep-link (was silently missing)"
+        );
+        assert_eq!(
+            hrefs.get("Root.Engine.Sensor").map(String::as_str),
+            Some("Root.Engine.html#root-engine-sensor"),
+            "an object node must now deep-link (was silently missing)"
+        );
+        assert_eq!(
+            hrefs.get("Root.Engine.Frame").map(String::as_str),
+            Some("Root.Engine.html#root-engine-frame"),
+            "a CAN message node must now deep-link (was silently missing)"
+        );
+        assert_eq!(
+            hrefs.get("Root.Engine.Frame.Rpm").map(String::as_str),
+            Some("Root.Engine.html#root-engine-frame-rpm"),
+            "a CAN signal node must now deep-link (was silently missing)"
+        );
+        assert_eq!(
+            hrefs.get("Root.Engine.Alias").map(String::as_str),
+            Some("Root.Engine.html#root-engine-alias")
+        );
+
+        // Enums live on the shared reference page and are not graph nodes, so the
+        // node-href map (unlike the search index) omits them.
+        assert!(
+            !hrefs.contains_key("Switch"),
+            "enums are not graph nodes and must not be in the node-href map"
+        );
+
+        // The node-href and search-index deep links agree for every shared key.
+        for e in build_search_entries(&model) {
+            if let Some(h) = hrefs.get(&e.path) {
+                assert_eq!(
+                    *h, e.href,
+                    "search index and node-href map disagree on {}",
+                    e.path
+                );
+            }
+        }
     }
 
     // #33: the nav is a nested <ul> tree (the collapse JS toggles it), the page

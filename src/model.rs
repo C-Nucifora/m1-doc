@@ -322,6 +322,89 @@ pub struct ProjectGraph {
     pub edges: Vec<GraphEdge>,
 }
 
+/// The kind of an [`AnchoredEntity`] — every documented thing that has its own
+/// `<page>#<anchor>` deep link. Used by [`DocModel::anchored_entities`] so the
+/// two link-building consumers (the search index and the graph node-href map)
+/// share one traversal and can each filter to the kinds they care about, rather
+/// than hand-walking the model in parallel and drifting (the historical bug:
+/// the search index and the graph href map covered different subsets).
+///
+/// Symbols are split into channel / parameter / constant so the search index can
+/// label them without re-inspecting the symbol; the graph map ignores the
+/// distinction (it keeps everything except [`AnchoredKind::Enum`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchoredKind {
+    Channel,
+    Parameter,
+    Constant,
+    Function,
+    Table,
+    Object,
+    CanMessage,
+    CanSignal,
+    Reference,
+    Enum,
+}
+
+impl AnchoredKind {
+    /// The kind for a [`SymbolDocKind`] symbol.
+    pub fn for_symbol(kind: SymbolDocKind) -> Self {
+        match kind {
+            SymbolDocKind::Channel => AnchoredKind::Channel,
+            SymbolDocKind::Parameter => AnchoredKind::Parameter,
+            SymbolDocKind::Constant => AnchoredKind::Constant,
+        }
+    }
+
+    /// A stable, human-readable label for the kind — the text the search index
+    /// shows (and the single place that text is defined).
+    pub fn label(self) -> &'static str {
+        match self {
+            AnchoredKind::Channel => "channel",
+            AnchoredKind::Parameter => "parameter",
+            AnchoredKind::Constant => "constant",
+            AnchoredKind::Function => "function",
+            AnchoredKind::Table => "table",
+            AnchoredKind::Object => "object",
+            AnchoredKind::CanMessage => "CAN message",
+            AnchoredKind::CanSignal => "CAN signal",
+            AnchoredKind::Reference => "reference",
+            AnchoredKind::Enum => "enum",
+        }
+    }
+}
+
+/// One documented entity that carries a stable `<page>#<anchor>` deep link, as
+/// yielded by [`DocModel::anchored_entities`]. `path` is the entity's full path
+/// (the enum's name for [`AnchoredKind::Enum`]); `page` is the HTML file it is
+/// documented on (`<group>.html`, or `enums.html` for an enum); `anchor` is its
+/// page-unique anchor. The canonical deep link is `format!("{page}#{anchor}")`,
+/// defined once via [`Self::href`] so no consumer reconstructs it by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchoredEntity<'a> {
+    pub kind: AnchoredKind,
+    pub path: &'a str,
+    pub page: String,
+    pub anchor: &'a str,
+    /// The owning group's path (the entity's home group), or `"Enums"` for an
+    /// enum, which lives on the shared reference page rather than a group page.
+    pub group: &'a str,
+    /// A short descriptive hint for the entity — its display/quantity unit
+    /// (symbol, CAN signal), return type (function), output unit (table), or
+    /// class (object); empty when the kind carries none. Surfaced here so the
+    /// search index does not re-walk the model to recover it.
+    pub hint: &'a str,
+}
+
+impl AnchoredEntity<'_> {
+    /// The canonical `<page>#<anchor>` deep link for this entity. The single
+    /// place the link shape is built, so the search index and the graph
+    /// node-href map can never disagree on it again.
+    pub fn href(&self) -> String {
+        format!("{}#{}", self.page, self.anchor)
+    }
+}
+
 /// The whole project's documentation: the group tree plus the project-wide
 /// Enums reference (sorted by name, deduped) and the relationship graph (#37).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -583,6 +666,114 @@ impl DocModel {
             .collect();
         self.enums.retain(|e| used.contains(e.name.as_str()));
     }
+
+    /// Every documented entity that carries a `<page>#<anchor>` deep link, in
+    /// deterministic order: groups in model (sorted) order, members in their
+    /// sorted model order within each group, CAN signals immediately after their
+    /// message, then the project-wide enums on the shared `enums.html` page.
+    ///
+    /// This is the single traversal that defines the project's deep-link set.
+    /// Both deep-link consumers in the HTML renderer — the search index and the
+    /// relationship-graph node-href map — build on it and filter by
+    /// [`AnchoredEntity::kind`], so they can never again diverge on *which*
+    /// kinds carry a link or *how* that link is shaped (the link shape lives in
+    /// [`AnchoredEntity::href`]). It covers all eight anchored kinds; each
+    /// caller keeps only the kinds it wants.
+    pub fn anchored_entities(&self) -> Vec<AnchoredEntity<'_>> {
+        let mut out = Vec::new();
+        for g in &self.groups {
+            let page = format!("{}.html", g.path);
+            for s in &g.symbols {
+                // Prefer the display unit, fall back to the quantity, else empty
+                // — the same precedence the search index has always shown.
+                let hint = s
+                    .unit
+                    .as_deref()
+                    .or(s.quantity.as_deref())
+                    .unwrap_or_default();
+                out.push(AnchoredEntity {
+                    kind: AnchoredKind::for_symbol(s.kind),
+                    path: &s.path,
+                    page: page.clone(),
+                    anchor: &s.anchor,
+                    group: &g.path,
+                    hint,
+                });
+            }
+            for f in &g.functions {
+                out.push(AnchoredEntity {
+                    kind: AnchoredKind::Function,
+                    path: &f.path,
+                    page: page.clone(),
+                    anchor: &f.anchor,
+                    group: &g.path,
+                    hint: f.return_type.as_deref().unwrap_or_default(),
+                });
+            }
+            for t in &g.tables {
+                out.push(AnchoredEntity {
+                    kind: AnchoredKind::Table,
+                    path: &t.path,
+                    page: page.clone(),
+                    anchor: &t.anchor,
+                    group: &g.path,
+                    hint: t.output_unit.as_deref().unwrap_or_default(),
+                });
+            }
+            for o in &g.objects {
+                out.push(AnchoredEntity {
+                    kind: AnchoredKind::Object,
+                    path: &o.path,
+                    page: page.clone(),
+                    anchor: &o.anchor,
+                    group: &g.path,
+                    hint: o.class.as_deref().unwrap_or_default(),
+                });
+            }
+            for m in &g.can_messages {
+                out.push(AnchoredEntity {
+                    kind: AnchoredKind::CanMessage,
+                    path: &m.path,
+                    page: page.clone(),
+                    anchor: &m.anchor,
+                    group: &g.path,
+                    hint: "",
+                });
+                for sig in &m.signals {
+                    out.push(AnchoredEntity {
+                        kind: AnchoredKind::CanSignal,
+                        path: &sig.path,
+                        page: page.clone(),
+                        anchor: &sig.anchor,
+                        group: &g.path,
+                        hint: sig.unit.as_deref().unwrap_or_default(),
+                    });
+                }
+            }
+            for r in &g.references {
+                out.push(AnchoredEntity {
+                    kind: AnchoredKind::Reference,
+                    path: &r.path,
+                    page: page.clone(),
+                    anchor: &r.anchor,
+                    group: &g.path,
+                    hint: "",
+                });
+            }
+        }
+        // Enums live on the shared reference page, not a group page.
+        for e in &self.enums {
+            out.push(AnchoredEntity {
+                kind: AnchoredKind::Enum,
+                path: &e.name,
+                page: "enums.html".to_string(),
+                anchor: &e.anchor,
+                group: "Enums",
+                hint: "",
+            });
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -784,5 +975,123 @@ mod tests {
         assert!(m.security_levels().is_empty());
         assert!(m.tags().is_empty());
         assert!(m.top_level_tree().is_empty());
+    }
+
+    // ---- the single anchored-entity traversal the deep-link consumers share ----
+
+    /// A model holding one of every anchored kind, so a single walk can assert
+    /// the shared iterator covers them all (the historical drift: the search
+    /// index and the graph node-href map walked different subsets by hand).
+    fn one_of_every_anchored_kind() -> DocModel {
+        DocModel {
+            title: "Demo".into(),
+            target_hardware: None,
+            enums: vec![EnumDoc {
+                name: "Switch".into(),
+                anchor: "switch".into(),
+                ..Default::default()
+            }],
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Engine.Speed".into(),
+                    anchor: "root-engine-speed".into(),
+                    ..Default::default()
+                }],
+                functions: vec![FunctionDoc {
+                    path: "Root.Engine.Update".into(),
+                    anchor: "root-engine-update".into(),
+                    ..Default::default()
+                }],
+                tables: vec![TableDoc {
+                    path: "Root.Engine.Map".into(),
+                    anchor: "root-engine-map".into(),
+                    ..Default::default()
+                }],
+                objects: vec![ObjectDoc {
+                    path: "Root.Engine.Sensor".into(),
+                    anchor: "root-engine-sensor".into(),
+                    ..Default::default()
+                }],
+                can_messages: vec![CanMessageDoc {
+                    path: "Root.Engine.Frame".into(),
+                    anchor: "root-engine-frame".into(),
+                    signals: vec![CanSignalDoc {
+                        path: "Root.Engine.Frame.Rpm".into(),
+                        anchor: "root-engine-frame-rpm".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                references: vec![ReferenceDoc {
+                    path: "Root.Engine.Alias".into(),
+                    anchor: "root-engine-alias".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            graph: ProjectGraph::default(),
+            m1prj_path: None,
+        }
+    }
+
+    #[test]
+    fn anchored_entities_cover_all_eight_kinds_with_canonical_hrefs() {
+        let m = one_of_every_anchored_kind();
+        let ents = m.anchored_entities();
+
+        // Every anchored kind is present exactly once — the search index and the
+        // graph node-href map both build on this, so none can be silently missed.
+        // The lone symbol defaults to Channel.
+        use std::collections::BTreeSet;
+        let kinds: BTreeSet<_> = ents.iter().map(|e| e.kind.label().to_string()).collect();
+        assert_eq!(
+            kinds,
+            BTreeSet::from([
+                "channel".to_string(),
+                "function".to_string(),
+                "table".to_string(),
+                "object".to_string(),
+                "CAN message".to_string(),
+                "CAN signal".to_string(),
+                "reference".to_string(),
+                "enum".to_string(),
+            ]),
+            "anchored_entities must cover all eight anchored kinds"
+        );
+
+        // Group-page entities deep-link to <group>.html#<anchor>; the enum
+        // deep-links to the shared enums.html page. href() is the one place the
+        // link shape is built, so both consumers agree by construction.
+        let by_path: std::collections::HashMap<&str, String> =
+            ents.iter().map(|e| (e.path, e.href())).collect();
+        assert_eq!(
+            by_path["Root.Engine.Speed"],
+            "Root.Engine.html#root-engine-speed"
+        );
+        assert_eq!(
+            by_path["Root.Engine.Frame.Rpm"],
+            "Root.Engine.html#root-engine-frame-rpm"
+        );
+        assert_eq!(by_path["Switch"], "enums.html#switch");
+
+        // The hint travels with the entity so the search index need not re-walk
+        // the model to recover it (here every fixture entity leaves it empty).
+        assert!(ents.iter().all(|e| e.hint.is_empty()));
+    }
+
+    #[test]
+    fn anchored_entities_signal_follows_its_message() {
+        let m = one_of_every_anchored_kind();
+        let ents = m.anchored_entities();
+        let msg = ents
+            .iter()
+            .position(|e| e.kind == AnchoredKind::CanMessage)
+            .unwrap();
+        let sig = ents
+            .iter()
+            .position(|e| e.kind == AnchoredKind::CanSignal)
+            .unwrap();
+        assert_eq!(sig, msg + 1, "a signal is yielded right after its message");
     }
 }
