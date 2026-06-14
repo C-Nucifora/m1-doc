@@ -176,6 +176,7 @@ mod tests {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {
                     path: "Root.Engine.Speed".into(),
+                    anchor: "root-engine-speed".into(),
                     kind: SymbolDocKind::Channel,
                     type_label: "f32".into(),
                     unit: Some("rpm".into()),
@@ -190,6 +191,22 @@ mod tests {
     fn render_html(model: &DocModel) -> Vec<RenderedFile> {
         let md_files = crate::markdown::render(model);
         render(&md_files, model)
+    }
+
+    // #24: the symbol's deterministic anchor id survives from Markdown into the
+    // HTML, so `Root.Engine.html#root-engine-speed` resolves to its row.
+    #[test]
+    fn symbol_anchor_id_survives_into_html() {
+        let files = render_html(&demo_model());
+        let page = files
+            .iter()
+            .find(|f| f.path == "Root.Engine.html")
+            .expect("Root.Engine.html missing");
+        assert!(
+            page.body.contains("id=\"root-engine-speed\""),
+            "expected the symbol anchor id in the HTML; got:\n{}",
+            &page.body[..page.body.len().min(800)]
+        );
     }
 
     // (a) Group page contains <table and the channel data.

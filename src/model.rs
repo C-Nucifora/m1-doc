@@ -1,6 +1,35 @@
 //! The in-memory documentation model — the single source of truth that the
 //! renderers read. No m1-core / m1-typecheck types leak past this boundary.
 
+/// Derive a URL-safe anchor slug from a symbol/function path: lowercase, with
+/// every run of non-alphanumeric characters collapsed to a single `-`
+/// (e.g. `Root.Engine.On 100Hz` → `root-engine-on-100hz`). The single shared
+/// derivation used by every renderer so Markdown and HTML never drift.
+///
+/// This is the *base* slug; per-page collision resolution (a `-2` suffix on the
+/// rare clash) is applied where the page is assembled (the loader), so the
+/// final [`SymbolDoc::anchor`] / [`FunctionDoc::anchor`] are unique within a
+/// page. Returns `"symbol"` for an input with no alphanumeric characters.
+pub fn anchor_slug(path: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for ch in path.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    if out.is_empty() {
+        out.push_str("symbol");
+    }
+    out
+}
+
 /// One `@m1:` annotation attached to a function's script.
 ///
 /// Each argument is rendered to a `String`: a positional becomes its value; a
@@ -25,6 +54,9 @@ pub struct AnnotationDoc {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FunctionDoc {
     pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]); assembled by the
+    /// loader so both renderers point at the same target.
+    pub anchor: String,
     pub inputs: Vec<(String, String)>,
     pub return_type: Option<String>,
     pub annotations: Vec<AnnotationDoc>,
@@ -38,6 +70,9 @@ pub struct FunctionDoc {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SymbolDoc {
     pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]); assembled by the
+    /// loader so both renderers point at the same target.
+    pub anchor: String,
     pub kind: SymbolDocKind,
     /// The storage type to show: `declared_type` verbatim when present, else the
     /// resolved value type's display string. Always present — every symbol has at
@@ -115,6 +150,17 @@ mod tests {
     fn function_doc_defaults_to_no_annotations() {
         let f = FunctionDoc::default();
         assert!(f.annotations.is_empty());
+    }
+
+    #[test]
+    fn anchor_slug_is_lowercase_hyphenated_and_collapsed() {
+        assert_eq!(anchor_slug("Root.Engine.Speed"), "root-engine-speed");
+        assert_eq!(anchor_slug("Root.Engine.On 100Hz"), "root-engine-on-100hz");
+        // Leading/trailing/repeated separators collapse; no edge hyphens.
+        assert_eq!(anchor_slug("Root..Engine -- X!"), "root-engine-x");
+        // No alphanumerics at all → a stable fallback, never an empty id.
+        assert_eq!(anchor_slug(""), "symbol");
+        assert_eq!(anchor_slug("...!!!"), "symbol");
     }
 
     #[test]
