@@ -19,6 +19,18 @@ pub struct RenderedFile {
     pub body: String,
 }
 
+/// Render-time options driven by CLI flags (#30). `source_base`, when set, turns
+/// a function's source path into an external link (e.g. a GitHub blob URL);
+/// `include_source` embeds the script body in a collapsible block.
+#[derive(Debug, Clone, Default)]
+pub struct RenderOptions {
+    /// Base URL prepended to a function's `source_path` to build a source link
+    /// (trailing slash optional). `None` → the path is shown as plain text.
+    pub source_base: Option<String>,
+    /// When `true`, embed each function's script body in a `<details>` block.
+    pub include_source: bool,
+}
+
 /// `Root.Engine` -> `Root.Engine.md` (a flat, link-safe filename keyed by the
 /// full group path, so every node in the tree has a distinct page).
 fn group_filename(group_path: &str) -> String {
@@ -83,16 +95,33 @@ pub(crate) fn format_rate(hz: Option<f64>) -> String {
     }
 }
 
+/// Build a function's Source line. With a `source_base` the path becomes an
+/// external link (`{base}/{path}`); without one it is shown verbatim so the
+/// reader still sees which `.m1scr` implements the function (#30).
+fn source_line(path: &str, base: Option<&str>) -> String {
+    match base {
+        Some(b) => {
+            let b = b.trim_end_matches('/');
+            format!("**Source:** [{path}]({b}/{path})\n")
+        }
+        None => format!("**Source:** `{path}`\n"),
+    }
+}
+
 /// Render one function entry as a `### <path>` subsection with its call rate,
-/// input list, optional return type, and, when present, an `**Annotations:**`
-/// block listing each `@m1:` annotation.
-fn render_function(f: &FunctionDoc) -> String {
+/// input list, optional return type, source link, and, when present, an
+/// `**Annotations:**` block. With `include_source` the script body is embedded
+/// in a `<details>` block (collapsible, and a real code block in HTML).
+fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
     let mut out = String::new();
     // Explicit, deterministic anchor (our scheme — not pulldown-cmark's
     // incidental heading slug) so `<group>.md#<anchor>` is stable.
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", f.anchor);
     let _ = writeln!(out, "### {}\n", f.path);
     let _ = writeln!(out, "**Call rate:** {}\n", format_rate(f.call_rate_hz));
+    if let Some(src) = &f.source_path {
+        let _ = writeln!(out, "{}", source_line(src, opts.source_base.as_deref()));
+    }
     if f.inputs.is_empty() {
         let _ = writeln!(out, "(no inputs)\n");
     } else {
@@ -110,6 +139,16 @@ fn render_function(f: &FunctionDoc) -> String {
             let _ = writeln!(out, "- {}", format_annotation(ann));
         }
         out.push('\n');
+    }
+    // Blank lines around the fence let pulldown-cmark treat <details>/</details>
+    // as raw HTML blocks while still parsing the fence into a real code block —
+    // collapsible in HTML, readable as Markdown (GitHub renders <details>).
+    if opts.include_source
+        && let Some(body) = &f.source_text
+    {
+        let _ = writeln!(out, "<details><summary>Source</summary>\n");
+        let _ = writeln!(out, "```m1\n{}\n```\n", body.trim_end());
+        let _ = writeln!(out, "</details>\n");
     }
     out
 }
@@ -263,7 +302,11 @@ fn type_cell(s: &SymbolDoc, enum_anchors: &HashMap<&str, &str>) -> String {
     }
 }
 
-fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String {
+fn render_group(
+    group: &GroupDoc,
+    enum_anchors: &HashMap<&str, &str>,
+    opts: &RenderOptions,
+) -> String {
     let mut out = String::new();
     // Breadcrumb of ancestor links, then the page heading.
     let _ = writeln!(out, "{}\n", render_breadcrumb(&group.path));
@@ -353,7 +396,7 @@ fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String 
     if !group.functions.is_empty() {
         let _ = writeln!(out, "## Functions\n");
         for f in &group.functions {
-            out.push_str(&render_function(f));
+            out.push_str(&render_function(f, opts));
         }
     }
     out
@@ -410,10 +453,19 @@ fn render_enums(enums: &[EnumDoc]) -> String {
     out
 }
 
+/// Render the whole model with default options (no source links, no embedded
+/// source). Convenience wrapper over [`render_with`] — the binary always passes
+/// explicit options, so this is used by the tests and the HTML test harness.
+#[cfg(test)]
+pub fn render(model: &DocModel) -> Vec<RenderedFile> {
+    render_with(model, &RenderOptions::default())
+}
+
 /// Render the whole model. Always emits `index.md` first, then one file per
 /// group in model order (already sorted by the loader), then the Enums
-/// reference page when the project uses any enums.
-pub fn render(model: &DocModel) -> Vec<RenderedFile> {
+/// reference page when the project uses any enums. `opts` controls function
+/// source links and embedding (#30).
+pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> {
     // name -> anchor for linking enum-typed symbols to the reference.
     let enum_anchors: HashMap<&str, &str> = model
         .enums
@@ -427,7 +479,7 @@ pub fn render(model: &DocModel) -> Vec<RenderedFile> {
     for g in &model.groups {
         files.push(RenderedFile {
             path: group_filename(&g.path),
-            body: render_group(g, &enum_anchors),
+            body: render_group(g, &enum_anchors, opts),
         });
     }
     if !model.enums.is_empty() {
@@ -1280,6 +1332,81 @@ mod tests {
             page.body.contains("BuiltIn.ChannelCalibratable |"),
             "non-plain class must be shown; got:\n{}",
             page.body
+        );
+    }
+
+    // ---- #30: function source links + embedding ----
+
+    fn fn_with_source() -> FunctionDoc {
+        FunctionDoc {
+            path: "Root.Engine.Update".into(),
+            anchor: "root-engine-update".into(),
+            call_rate_hz: Some(100.0),
+            source_path: Some("Engine/Update.m1scr".into()),
+            source_text: Some("Out = In.Speed * 2;\n".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn function_source_path_shown_plain_without_base() {
+        let out = render_function(&fn_with_source(), &RenderOptions::default());
+        assert!(
+            out.contains("**Source:** `Engine/Update.m1scr`"),
+            "plain source path missing; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn function_source_path_becomes_link_with_base() {
+        let opts = RenderOptions {
+            source_base: Some("https://github.com/UQRacing/EV-M1/blob/main/".into()),
+            include_source: false,
+        };
+        let out = render_function(&fn_with_source(), &opts);
+        assert!(
+            out.contains(
+                "**Source:** [Engine/Update.m1scr](https://github.com/UQRacing/EV-M1/blob/main/Engine/Update.m1scr)"
+            ),
+            "source link (trailing slash trimmed) wrong; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn include_source_embeds_collapsible_body() {
+        let opts = RenderOptions {
+            source_base: None,
+            include_source: true,
+        };
+        let out = render_function(&fn_with_source(), &opts);
+        assert!(
+            out.contains("<details><summary>Source</summary>")
+                && out.contains("```m1\nOut = In.Speed * 2;\n```")
+                && out.contains("</details>"),
+            "include_source must embed a collapsible code block; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn source_off_by_default_no_details() {
+        let out = render_function(&fn_with_source(), &RenderOptions::default());
+        assert!(
+            !out.contains("<details>"),
+            "source body must not embed unless --include-source; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn function_without_source_path_omits_source_line() {
+        let f = FunctionDoc {
+            path: "Root.Engine.NoFile".into(),
+            anchor: "root-engine-nofile".into(),
+            ..Default::default()
+        };
+        let out = render_function(&f, &RenderOptions::default());
+        assert!(
+            !out.contains("**Source:**"),
+            "no source path → no Source line; got:\n{out}"
         );
     }
 

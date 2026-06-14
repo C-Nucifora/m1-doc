@@ -109,10 +109,10 @@ fn format_html_writes_html_only() {
     );
 }
 
-// #17: positional FILES are accepted but not consumed yet. Passing them must
-// not silently exit 0 as if they were used — it should still succeed but warn.
+// #30: the inert `FILES` positional (the ex-#17 footgun) is removed. Passing a
+// stray positional must now fail loudly rather than be silently dropped.
 #[test]
-fn passing_files_warns_they_are_unused() {
+fn stray_positional_argument_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let prj = dir.path().join("Project.m1prj");
     std::fs::write(&prj, FIXTURE_XML).unwrap();
@@ -120,7 +120,7 @@ fn passing_files_warns_they_are_unused() {
     std::fs::write(&script, "// script\n").unwrap();
     let out = dir.path().join("docs");
 
-    let assert = Command::cargo_bin("m1-doc")
+    Command::cargo_bin("m1-doc")
         .unwrap()
         .args([
             "--project",
@@ -132,18 +132,7 @@ fn passing_files_warns_they_are_unused() {
             script.to_str().unwrap(),
         ])
         .assert()
-        .success();
-
-    let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
-    assert!(
-        stderr.contains("not used yet"),
-        "expected a warning that FILES are unused; got stderr:\n{stderr}"
-    );
-    // Project docs are still generated.
-    assert!(
-        out.join("index.md").exists(),
-        "index.md should still be written"
-    );
+        .failure();
 }
 
 #[test]

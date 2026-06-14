@@ -64,6 +64,14 @@ pub struct FunctionDoc {
     /// (e.g. a `100 Hz` event). `None` when the function has no rate-bearing
     /// trigger (`On Startup`, untriggered) — rendered as `—`, never faked.
     pub call_rate_hz: Option<f64>,
+    /// Project-relative path of the `.m1scr` that implements this function
+    /// (e.g. `Engine/Update.m1scr`), forward-slashed. `None` when the function
+    /// declares no `Filename=` or the script could not be located (#30).
+    pub source_path: Option<String>,
+    /// The script body, retained by the loader so `--include-source` can embed
+    /// it. `None` when no script was read. Carried on the model (rather than
+    /// re-read at render time) because the renderers have no filesystem access.
+    pub source_text: Option<String>,
 }
 
 /// One documented symbol (channel / parameter / constant).
