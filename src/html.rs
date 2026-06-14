@@ -97,6 +97,9 @@ fn build_nav(model: &DocModel) -> String {
 
     let mut nav = String::from("<nav><h2>Navigation</h2>");
     nav.push_str("<a href=\"index.html\">Index</a>");
+    if !model.enums.is_empty() {
+        nav.push_str("<a href=\"enums.html\">Enums</a>");
+    }
     nav.push_str("<ul>");
     // Start the tree from the forest roots (groups whose parent is not itself a
     // documented group); descend recursively. The interactive collapse widget
@@ -206,6 +209,7 @@ mod tests {
     fn demo_model() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {

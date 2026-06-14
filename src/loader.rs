@@ -5,11 +5,11 @@
 //! node so the full tree is navigable.
 
 use crate::model::{
-    AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableAxisDoc,
-    TableDoc, anchor_slug,
+    AnnotationDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind,
+    TableAxisDoc, TableDoc, anchor_slug,
 };
 use m1_typecheck::Project;
-use m1_typecheck::symbols::{Symbol, SymbolKind};
+use m1_typecheck::symbols::{Symbol, SymbolKind, SymbolTable};
 use std::collections::BTreeMap;
 
 /// The parent group of a path: everything up to (not including) the last
@@ -102,32 +102,32 @@ fn value_type_label(vt: m1_typecheck::ValueType) -> &'static str {
     }
 }
 
-/// The storage type label: the declared type verbatim when present, else the
-/// resolved value type's display string. Always returns a non-empty string —
-/// every symbol has at least a resolved `ValueType`.
-fn type_label(sym: &Symbol) -> String {
-    sym.declared_type
-        .clone()
-        .unwrap_or_else(|| value_type_label(sym.value_type).to_string())
-}
-
-fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
+fn symbol_doc(sym: &Symbol, kind: SymbolDocKind, table: &SymbolTable) -> SymbolDoc {
     // `display_unit` is the human-visible unit (e.g. `rpm`, `kPa`) from
     // `<Locale><Default Unit="…">`. `unit` is the stored base unit derived from
     // `Qty` (e.g. `rad/s`). We prefer `display_unit` for documentation because
     // it is what MoTeC Build and the dash display to the user.
     let unit = sym.display_unit.clone().or_else(|| sym.unit.clone());
+    // Resolve an enum-typed symbol to its enum's name (#27), so the type shows
+    // `MoTeC Types.Switch` and links to the Enums reference instead of `enum`.
+    let enum_name = sym.enum_assoc.map(|id| table.enum_type(id).name.clone());
+    let type_label = sym
+        .declared_type
+        .clone()
+        .or_else(|| enum_name.clone())
+        .unwrap_or_else(|| value_type_label(sym.value_type).to_string());
     SymbolDoc {
         path: sym.path.clone(),
         // Base slug; `assign_anchors` resolves any page collisions.
         anchor: anchor_slug(&sym.path),
         kind,
-        type_label: type_label(sym),
+        type_label,
         quantity: sym.qty.clone(),
         unit,
         base_unit: sym.unit.clone(),
         log_rate_hz: sym.log_rate_hz,
         security: sym.security.clone(),
+        enum_ref: enum_name,
     }
 }
 
@@ -288,8 +288,9 @@ fn ensure_group(groups: &mut BTreeMap<String, GroupDoc>, path: &str) {
 }
 
 pub fn build_model(project: &Project, title: String) -> DocModel {
+    let table = project.symbols();
     let mut groups: BTreeMap<String, GroupDoc> = BTreeMap::new();
-    for sym in project.symbols().iter() {
+    for sym in table.iter() {
         // A documented member lives on its *parent* group's page — the path
         // minus its own leaf segment — at whatever depth that is.
         let parent = parent_group(&sym.path).to_string();
@@ -301,7 +302,7 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
             .get_mut(&parent)
             .expect("ensure_group just created it");
         if let Some(kind) = doc_kind(sym.kind) {
-            group.symbols.push(symbol_doc(sym, kind));
+            group.symbols.push(symbol_doc(sym, kind, table));
         } else if is_function(sym.kind) {
             group.functions.push(function_doc(sym));
         } else if matches!(sym.kind, SymbolKind::Table) {
@@ -328,7 +329,45 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
         g.children.sort();
         assign_anchors(g);
     }
-    DocModel { title, groups }
+    let enums = collect_enums(table);
+    DocModel {
+        title,
+        groups,
+        enums,
+    }
+}
+
+/// Collect every enum type referenced by a symbol's `enum_assoc` into a sorted,
+/// deduped reference. Members are listed in container order (#27). Anchors are
+/// kept unique within the Enums page so each entry is deep-linkable.
+fn collect_enums(table: &SymbolTable) -> Vec<EnumDoc> {
+    let mut by_name: BTreeMap<String, EnumDoc> = BTreeMap::new();
+    for sym in table.iter() {
+        let Some(id) = sym.enum_assoc else { continue };
+        let et = table.enum_type(id);
+        by_name.entry(et.name.clone()).or_insert_with(|| {
+            let mut members = et.members.clone();
+            members.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            EnumDoc {
+                name: et.name.clone(),
+                anchor: anchor_slug(&et.name),
+                members: members.into_iter().map(|(n, _)| n).collect(),
+                default: et.default.clone(),
+                open: et.open,
+            }
+        });
+    }
+    // Keep anchors unique within the Enums page (rare slug collisions get -2…).
+    let mut enums: Vec<EnumDoc> = by_name.into_values().collect();
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for e in &mut enums {
+        let n = counts.entry(e.anchor.clone()).or_insert(0);
+        *n += 1;
+        if *n > 1 {
+            e.anchor = format!("{}-{n}", e.anchor);
+        }
+    }
+    enums
 }
 
 /// Assign each symbol and function on a group page a page-unique anchor id.

@@ -2,9 +2,13 @@
 //! This is the canonical output; the HTML renderer (P3) consumes these files.
 
 use crate::model::{
-    AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableDoc,
+    AnnotationDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableDoc,
 };
+use std::collections::HashMap;
 use std::fmt::Write as _;
+
+/// The filename of the project-wide Enums reference page.
+const ENUMS_FILE: &str = "enums.md";
 
 /// A rendered file: a project-relative path and its Markdown body.
 pub struct RenderedFile {
@@ -134,7 +138,19 @@ fn render_table(t: &TableDoc) -> String {
     out
 }
 
-fn render_group(group: &GroupDoc) -> String {
+/// Render a symbol's Type cell: an enum-typed symbol links to its entry in the
+/// Enums reference; everything else is the plain type label.
+fn type_cell(s: &SymbolDoc, enum_anchors: &HashMap<&str, &str>) -> String {
+    match &s.enum_ref {
+        Some(name) => match enum_anchors.get(name.as_str()) {
+            Some(anchor) => format!("[{}]({ENUMS_FILE}#{anchor})", s.type_label),
+            None => s.type_label.clone(),
+        },
+        None => s.type_label.clone(),
+    }
+}
+
+fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String {
     let mut out = String::new();
     // Breadcrumb of ancestor links, then the page heading.
     let _ = writeln!(out, "{}\n", render_breadcrumb(&group.path));
@@ -181,7 +197,7 @@ fn render_group(group: &GroupDoc) -> String {
                 "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} | {} | {} |",
                 s.anchor,
                 s.path,
-                s.type_label,
+                type_cell(s, enum_anchors),
                 s.quantity.as_deref().unwrap_or("—"),
                 s.unit.as_deref().unwrap_or("—"),
                 base,
@@ -220,12 +236,53 @@ fn render_index(model: &DocModel) -> String {
             let _ = writeln!(out, "- [{}]({})", g.path, group_filename(&g.path));
         }
     }
+    if !model.enums.is_empty() {
+        let _ = writeln!(out, "\n## Reference\n");
+        let _ = writeln!(out, "- [Enums]({ENUMS_FILE})");
+    }
+    out
+}
+
+/// Render the project-wide Enums reference page: each enum is an anchored
+/// section listing its enumerators (container order), default, and open flag.
+/// An `open` (firmware) enum is labelled so its member list reads as partial.
+fn render_enums(enums: &[EnumDoc]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Enums\n");
+    for e in enums {
+        let _ = writeln!(out, "<a id=\"{}\"></a>\n", e.anchor);
+        let default = e.default.as_deref().unwrap_or("—");
+        if e.open {
+            let _ = writeln!(
+                out,
+                "## {} (open — firmware-supplied, members may be partial; default: {default})\n",
+                e.name
+            );
+        } else {
+            let _ = writeln!(out, "## {} (default: {default})\n", e.name);
+        }
+        if e.members.is_empty() {
+            let _ = writeln!(out, "(no enumerators available)\n");
+        } else {
+            for m in &e.members {
+                let _ = writeln!(out, "- {m}");
+            }
+            out.push('\n');
+        }
+    }
     out
 }
 
 /// Render the whole model. Always emits `index.md` first, then one file per
-/// group in model order (already sorted by the loader).
+/// group in model order (already sorted by the loader), then the Enums
+/// reference page when the project uses any enums.
 pub fn render(model: &DocModel) -> Vec<RenderedFile> {
+    // name -> anchor for linking enum-typed symbols to the reference.
+    let enum_anchors: HashMap<&str, &str> = model
+        .enums
+        .iter()
+        .map(|e| (e.name.as_str(), e.anchor.as_str()))
+        .collect();
     let mut files = vec![RenderedFile {
         path: "index.md".to_string(),
         body: render_index(model),
@@ -233,7 +290,13 @@ pub fn render(model: &DocModel) -> Vec<RenderedFile> {
     for g in &model.groups {
         files.push(RenderedFile {
             path: group_filename(&g.path),
-            body: render_group(g),
+            body: render_group(g, &enum_anchors),
+        });
+    }
+    if !model.enums.is_empty() {
+        files.push(RenderedFile {
+            path: ENUMS_FILE.to_string(),
+            body: render_enums(&model.enums),
         });
     }
     files
@@ -243,12 +306,13 @@ pub fn render(model: &DocModel) -> Vec<RenderedFile> {
 mod tests {
     use super::*;
     use crate::model::{
-        DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
+        DocModel, EnumDoc, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
     };
 
     fn sample() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {
@@ -269,6 +333,7 @@ mod tests {
     fn sample_with_functions() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![],
@@ -325,6 +390,7 @@ mod tests {
     fn sample_with_constant() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {
@@ -427,6 +493,7 @@ mod tests {
         use crate::model::AnnotationDoc;
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![],
@@ -484,6 +551,7 @@ mod tests {
     fn function_with_return_type_renders_returns_line() {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![],
@@ -534,6 +602,7 @@ mod tests {
         // the channel carries a quantity and a log rate.
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![
@@ -589,9 +658,105 @@ mod tests {
     }
 
     #[test]
+    fn enums_reference_lists_closed_enum_with_members_and_default(/* #27 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![],
+            enums: vec![EnumDoc {
+                name: "MoTeC Types.Switch".into(),
+                anchor: "motec-types-switch".into(),
+                members: vec!["Off".into(), "On".into()],
+                default: Some("Off".into()),
+                open: false,
+            }],
+        };
+        let files = render(&model);
+        let page = files
+            .iter()
+            .find(|f| f.path == "enums.md")
+            .expect("enums.md should be emitted");
+        assert!(
+            page.body.contains("## MoTeC Types.Switch (default: Off)"),
+            "closed enum heading wrong; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("<a id=\"motec-types-switch\"></a>")
+                && page.body.contains("- Off")
+                && page.body.contains("- On"),
+            "members/anchor missing; got:\n{}",
+            page.body
+        );
+        // The index links the reference.
+        let index = &files[0];
+        assert!(
+            index.body.contains("[Enums](enums.md)"),
+            "index should link the enums reference; got:\n{}",
+            index.body
+        );
+    }
+
+    #[test]
+    fn open_enum_is_labelled_partial(/* #27 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![],
+            enums: vec![EnumDoc {
+                name: "Gear State".into(),
+                anchor: "gear-state".into(),
+                members: vec!["Neutral".into()],
+                default: None,
+                open: true,
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "enums.md").unwrap();
+        assert!(
+            page.body
+                .contains("open — firmware-supplied, members may be partial"),
+            "open enum must be labelled partial; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn enum_typed_symbol_links_to_its_reference_entry(/* #27 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            enums: vec![EnumDoc {
+                name: "Switch".into(),
+                anchor: "switch".into(),
+                members: vec!["Off".into(), "On".into()],
+                default: Some("Off".into()),
+                open: false,
+            }],
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Engine.Mode".into(),
+                    anchor: "root-engine-mode".into(),
+                    kind: SymbolDocKind::Channel,
+                    type_label: "Switch".into(),
+                    enum_ref: Some("Switch".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body.contains("[Switch](enums.md#switch)"),
+            "enum-typed symbol must link to its reference; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
     fn group_page_renders_tables_section_with_dimensionality(/* #26 */) {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 tables: vec![TableDoc {
@@ -637,6 +802,7 @@ mod tests {
     fn table_without_cfg_metadata_is_still_listed(/* #26 */) {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 tables: vec![TableDoc {
@@ -662,6 +828,7 @@ mod tests {
     fn group_page_has_breadcrumb_and_subgroup_links(/* #23 */) {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine.Fuel".into(),
                 children: vec!["Root.Engine.Fuel.Pump".into()],
@@ -693,6 +860,7 @@ mod tests {
     fn index_links_only_forest_roots_not_every_node(/* #23 */) {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![
                 GroupDoc {
                     path: "Root".into(),
@@ -724,6 +892,7 @@ mod tests {
     fn rows_and_functions_emit_their_stable_anchor(/* #24 */) {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {
@@ -763,6 +932,7 @@ mod tests {
     fn function_renders_call_rate_and_dash_when_absent() {
         let model = DocModel {
             title: "Demo".into(),
+            enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![],
