@@ -28,6 +28,7 @@ pub fn render(model: &DocModel) -> String {
     w.object(|w| {
         w.field_u32("schema_version", SCHEMA_VERSION);
         w.field_str("title", &model.title);
+        w.field_opt_str("target_hardware", model.target_hardware.as_deref());
         w.field("groups", |w| w.array(&model.groups, write_group));
         w.field("enums", |w| w.array(&model.enums, write_enum));
     });
@@ -70,6 +71,7 @@ fn write_symbol(w: &mut Writer, s: &SymbolDoc) {
         w.field_opt_str("security", s.security.as_deref());
         w.field_opt_str("enum_ref", s.enum_ref.as_deref());
         w.field_opt_str("classname", s.classname.as_deref());
+        w.field("tags", |w| w.string_array(&s.tags));
     });
 }
 
@@ -355,6 +357,7 @@ mod tests {
     fn rich_model() -> DocModel {
         DocModel {
             title: "Demo \"Project\"".into(),
+            target_hardware: Some("ecu120".into()),
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {
@@ -369,6 +372,7 @@ mod tests {
                     security: Some("Engineer".into()),
                     enum_ref: None,
                     classname: Some("BuiltIn.Channel".into()),
+                    tags: vec!["engine".into(), "fuel".into()],
                 }],
                 functions: vec![FunctionDoc {
                     path: "Root.Engine.Update".into(),
@@ -480,6 +484,7 @@ mod tests {
         // an invented value (degrade, never fake).
         let model = DocModel {
             title: "T".into(),
+            target_hardware: None,
             groups: vec![GroupDoc {
                 path: "Root".into(),
                 symbols: vec![SymbolDoc {
@@ -531,6 +536,7 @@ mod tests {
         // A NaN log rate has no JSON number form → null, keeping output valid.
         let model = DocModel {
             title: "T".into(),
+            target_hardware: None,
             groups: vec![GroupDoc {
                 path: "Root".into(),
                 symbols: vec![SymbolDoc {
