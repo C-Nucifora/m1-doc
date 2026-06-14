@@ -90,6 +90,39 @@ fn resolve_project(arg: Option<PathBuf>) -> Option<PathBuf> {
     }
 }
 
+/// Levenshtein edit distance between two strings, used to suggest the closest
+/// real group when `--graph` is given an unknown one.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// The closest group path to `group` by edit distance, if a reasonably close one
+/// exists — a "did you mean" suggestion for a mistyped `--graph` argument. Only
+/// returns a hint when the distance is within a third of the target's length, so
+/// wildly different inputs get no misleading suggestion.
+fn nearest_group<'a>(group: &str, model: &'a model::DocModel) -> Option<&'a str> {
+    let threshold = (group.chars().count() / 3).max(1);
+    model
+        .groups
+        .iter()
+        .map(|g| (edit_distance(group, &g.path), g.path.as_str()))
+        .filter(|(d, _)| *d <= threshold)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, path)| path)
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -113,6 +146,22 @@ fn main() {
             process::exit(1);
         }
     };
+
+    // #37: `--graph <group>` must name a real group. Validate against the FULL
+    // model — before any scoping (#34) prunes groups — so a typo (`Root.Engien`)
+    // fails fast with a usage error rather than silently producing an empty "No
+    // documented relationships" page and a dead index link, while a real but
+    // scoped-out group is never mistaken for a typo.
+    if let Some(group) = args.graph.as_deref()
+        && !model.groups.iter().any(|g| g.path == group)
+    {
+        eprint!("m1-doc: --graph: no group named `{group}`");
+        if let Some(near) = nearest_group(group, &model) {
+            eprint!(" (did you mean `{near}`?)");
+        }
+        eprintln!();
+        process::exit(2);
+    }
 
     // Scoped generation (#34): narrow the model to the requested security
     // level(s) and/or tag before rendering, so every output format reflects the
