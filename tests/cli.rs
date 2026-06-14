@@ -344,3 +344,81 @@ fn only_tag_with_no_matches_produces_an_empty_scope() {
         "a group with no matching symbol is pruned"
     );
 }
+
+// #37: `--graph <group>` must name a real group. A typo (`Root.Engien`) should
+// fail fast with a usage error (exit 2) on stderr rather than silently emitting
+// an empty "No documented relationships" subsystem page and a dead index link.
+#[test]
+fn graph_with_unknown_group_fails_and_writes_no_graph_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let prj = dir.path().join("Project.m1prj");
+    std::fs::write(&prj, FIXTURE_XML).unwrap();
+    let out = dir.path().join("docs");
+
+    let assert = Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            prj.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "--graph",
+            "Root.Engien",
+        ])
+        .assert()
+        .failure()
+        .code(2);
+
+    let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
+    assert!(
+        stderr.contains("--graph") && stderr.contains("Root.Engien"),
+        "expected an unknown-group error naming the typo on stderr; got:\n{stderr}"
+    );
+
+    // No subsystem graph page (or any output) was emitted for the bogus group.
+    let graph_pages: Vec<_> = std::fs::read_dir(&out)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("graph.") && n.ends_with(".md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        graph_pages.is_empty(),
+        "no graph.*.md page must be written for an unknown group; found: {graph_pages:?}"
+    );
+}
+
+// A genuine group still produces a subsystem page even when it has no edges:
+// validity is checked against the model, not against the diagram being empty.
+#[test]
+fn graph_with_real_but_edgeless_group_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let prj = dir.path().join("Project.m1prj");
+    std::fs::write(&prj, FIXTURE_XML).unwrap();
+    let out = dir.path().join("docs");
+
+    Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            prj.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "--graph",
+            "Root.Engine",
+        ])
+        .assert()
+        .success();
+
+    let graph = std::fs::read_to_string(out.join("graph.root-engine.md")).unwrap();
+    assert!(
+        graph.contains("Subsystem: Root.Engine"),
+        "the real group's subsystem page must render:\n{graph}"
+    );
+}
