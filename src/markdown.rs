@@ -12,9 +12,45 @@ pub struct RenderedFile {
     pub body: String,
 }
 
-/// `Root.Engine` -> `Root.Engine.md` (a flat, link-safe filename).
+/// `Root.Engine` -> `Root.Engine.md` (a flat, link-safe filename keyed by the
+/// full group path, so every node in the tree has a distinct page).
 fn group_filename(group_path: &str) -> String {
     format!("{group_path}.md")
+}
+
+/// The leaf segment of a dotted path (`Root.Engine.Fuel` -> `Fuel`) — the label
+/// to show for a group in breadcrumbs and sub-group lists.
+fn last_segment(path: &str) -> &str {
+    path.rsplit('.').next().unwrap_or(path)
+}
+
+/// The parent group of a path (everything before the last dot), or `""` for a
+/// single-segment root.
+fn parent_path(path: &str) -> &str {
+    match path.rfind('.') {
+        Some(i) => &path[..i],
+        None => "",
+    }
+}
+
+/// Render a `Root › Engine › Fuel` breadcrumb: every ancestor segment is a link
+/// to its own page; the current (last) segment is plain text.
+fn render_breadcrumb(path: &str) -> String {
+    let segs: Vec<&str> = path.split('.').collect();
+    let mut crumbs = Vec::with_capacity(segs.len());
+    let mut cumulative = String::new();
+    for (i, seg) in segs.iter().enumerate() {
+        if i > 0 {
+            cumulative.push('.');
+        }
+        cumulative.push_str(seg);
+        if i + 1 < segs.len() {
+            crumbs.push(format!("[{seg}]({})", group_filename(&cumulative)));
+        } else {
+            crumbs.push((*seg).to_string());
+        }
+    }
+    crumbs.join(" › ")
 }
 
 /// Format one annotation as `@m1:<kind>(<args>)`, omitting the parens when
@@ -73,7 +109,22 @@ fn render_function(f: &FunctionDoc) -> String {
 
 fn render_group(group: &GroupDoc) -> String {
     let mut out = String::new();
+    // Breadcrumb of ancestor links, then the page heading.
+    let _ = writeln!(out, "{}\n", render_breadcrumb(&group.path));
     let _ = writeln!(out, "# {}\n", group.path);
+    // Sub-groups first so an intermediate (member-less) node is still navigable.
+    if !group.children.is_empty() {
+        let _ = writeln!(out, "## Sub-groups\n");
+        for child in &group.children {
+            let _ = writeln!(
+                out,
+                "- [{}]({})",
+                last_segment(child),
+                group_filename(child)
+            );
+        }
+        out.push('\n');
+    }
     for kind in [
         SymbolDocKind::Channel,
         SymbolDocKind::Parameter,
@@ -126,8 +177,15 @@ fn render_index(model: &DocModel) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}\n", model.title);
     let _ = writeln!(out, "## Groups\n");
+    // List only the forest-root groups (those whose parent is not itself a
+    // documented group); the full tree is reachable by descending from them.
+    let present: std::collections::HashSet<&str> =
+        model.groups.iter().map(|g| g.path.as_str()).collect();
     for g in &model.groups {
-        let _ = writeln!(out, "- [{}]({})", g.path, group_filename(&g.path));
+        let parent = parent_path(&g.path);
+        if parent.is_empty() || !present.contains(parent) {
+            let _ = writeln!(out, "- [{}]({})", g.path, group_filename(&g.path));
+        }
     }
     out
 }
@@ -167,6 +225,7 @@ mod tests {
                     ..Default::default()
                 }],
                 functions: vec![],
+                children: vec![],
             }],
         }
     }
@@ -196,6 +255,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                children: vec![],
             }],
         }
     }
@@ -239,6 +299,7 @@ mod tests {
                     ..Default::default()
                 }],
                 functions: vec![],
+                children: vec![],
             }],
         }
     }
@@ -347,6 +408,7 @@ mod tests {
                     ],
                     ..Default::default()
                 }],
+                children: vec![],
             }],
         };
         let files = render(&model);
@@ -393,6 +455,7 @@ mod tests {
                     annotations: vec![],
                     ..Default::default()
                 }],
+                children: vec![],
             }],
         };
         let files = render(&model);
@@ -459,6 +522,7 @@ mod tests {
                     },
                 ],
                 functions: vec![],
+                children: vec![],
             }],
         };
         let files = render(&model);
@@ -484,6 +548,68 @@ mod tests {
     }
 
     #[test]
+    fn group_page_has_breadcrumb_and_subgroup_links(/* #23 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine.Fuel".into(),
+                children: vec!["Root.Engine.Fuel.Pump".into()],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files
+            .iter()
+            .find(|f| f.path == "Root.Engine.Fuel.md")
+            .unwrap();
+        // Breadcrumb: ancestors are links, the current segment is plain.
+        assert!(
+            page.body
+                .contains("[Root](Root.md) › [Engine](Root.Engine.md) › Fuel"),
+            "breadcrumb wrong; got:\n{}",
+            page.body
+        );
+        // Sub-groups section links each child by its leaf label.
+        assert!(
+            page.body.contains("## Sub-groups")
+                && page.body.contains("[Pump](Root.Engine.Fuel.Pump.md)"),
+            "sub-groups missing; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn index_links_only_forest_roots_not_every_node(/* #23 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![
+                GroupDoc {
+                    path: "Root".into(),
+                    children: vec!["Root.Engine".into()],
+                    ..Default::default()
+                },
+                GroupDoc {
+                    path: "Root.Engine".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let files = render(&model);
+        let index = &files[0];
+        assert!(
+            index.body.contains("[Root](Root.md)"),
+            "got:\n{}",
+            index.body
+        );
+        // Root.Engine is reachable by descending, not listed at the index top level.
+        assert!(
+            !index.body.contains("[Root.Engine](Root.Engine.md)"),
+            "index must not flat-list child groups; got:\n{}",
+            index.body
+        );
+    }
+
+    #[test]
     fn rows_and_functions_emit_their_stable_anchor(/* #24 */) {
         let model = DocModel {
             title: "Demo".into(),
@@ -501,6 +627,7 @@ mod tests {
                     anchor: "root-engine-update".into(),
                     ..Default::default()
                 }],
+                children: vec![],
             }],
         };
         let files = render(&model);
@@ -539,6 +666,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                children: vec![],
             }],
         };
         let files = render(&model);
