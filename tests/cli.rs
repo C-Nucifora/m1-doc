@@ -209,3 +209,80 @@ fn generates_markdown_for_a_project() {
         "breadcrumb missing:\n{page}"
     );
 }
+
+/// #34: `--only-security` scopes generation to the requested access level(s).
+/// A project with a Tune channel and a Calibration parameter, generated with
+/// `--only-security Tune`, must document only the Tune symbol.
+const SCOPED_XML: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession><Project Name="Demo" TargetHardware="ecu120"><ComponentStream><List>
+<Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+<Component Classname="BuiltIn.Channel" Name="Root.Engine.Speed"><Props Type="f32" Security="Tune"/></Component>
+<Component Classname="BuiltIn.Parameter" Name="Root.Engine.Gain"><Props Type="f32" Security="Calibration"/></Component>
+</List></ComponentStream></Project></MoTeCM1BuildSession>"#;
+
+#[test]
+fn only_security_scopes_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let prj = dir.path().join("Project.m1prj");
+    std::fs::write(&prj, SCOPED_XML).unwrap();
+    let out = dir.path().join("docs");
+
+    Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            prj.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "--only-security",
+            "Tune",
+        ])
+        .assert()
+        .success();
+
+    let page = std::fs::read_to_string(out.join("Root.Engine.md")).unwrap();
+    assert!(
+        page.contains("Root.Engine.Speed"),
+        "the Tune symbol must be documented:\n{page}"
+    );
+    assert!(
+        !page.contains("Root.Engine.Gain"),
+        "the Calibration symbol must be scoped out:\n{page}"
+    );
+}
+
+#[test]
+fn only_tag_with_no_matches_produces_an_empty_scope() {
+    // No symbol carries the tag, so the scoped model is empty — generation still
+    // succeeds and writes a (memberless) index rather than crashing.
+    let dir = tempfile::tempdir().unwrap();
+    let prj = dir.path().join("Project.m1prj");
+    std::fs::write(&prj, SCOPED_XML).unwrap();
+    let out = dir.path().join("docs");
+
+    Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            prj.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "--only-tag",
+            "nonexistent",
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        out.join("index.md").exists(),
+        "index is still written for an empty scope"
+    );
+    assert!(
+        !out.join("Root.Engine.md").exists(),
+        "a group with no matching symbol is pruned"
+    );
+}

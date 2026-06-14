@@ -16,6 +16,13 @@ m1-doc --project path/to/Project.m1prj --out site --format both
 output; HTML is rendered from it (so the two never diverge) into a self-contained
 site.
 
+**Scoped generation.** `--only-security Tune,Calibration` restricts the output to
+symbols at the given access level(s); `--only-tag <tag>` restricts to symbols
+carrying a tag. Combine them to intersect. A scoped run is symbol-centric — it
+documents the matching channels/parameters/constants (and the group tree that
+holds them) and omits functions, tables, objects and CAN, so you can produce, for
+example, a calibration-focused subset for a given access level.
+
 The HTML site is a single, dependency-free bundle (inline CSS/JS, no CDN, works
 from `file://` and GitHub Pages): a project overview landing page (stats, target
 hardware, group tree), a collapsible nav tree with an in-page table of contents

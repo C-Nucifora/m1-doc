@@ -423,6 +423,68 @@ impl DocModel {
         }
         set.into_iter().map(str::to_string).collect()
     }
+
+    /// Scope the model in place to only the symbols matching `security` (any of
+    /// the given access levels) and/or `tag` — the `--only-security` /
+    /// `--only-tag` scoped-generation filter (#34). When both are given a symbol
+    /// must satisfy both (intersection); `None` for either leaves that axis
+    /// unconstrained. A scoped view is symbol-centric, so functions, tables,
+    /// objects and CAN messages are dropped; groups with no surviving symbol are
+    /// pruned, but every ancestor of a surviving group is kept so the tree stays
+    /// navigable; child links and the enum reference list are rebuilt to match.
+    /// Deterministic: ordering is preserved and pruning is set-membership only.
+    pub fn retain_scoped(&mut self, security: Option<&[String]>, tag: Option<&str>) {
+        use std::collections::BTreeSet;
+        let keep_sym = |s: &SymbolDoc| -> bool {
+            let sec_ok = match security {
+                Some(levels) => s
+                    .security
+                    .as_deref()
+                    .is_some_and(|sec| levels.iter().any(|l| l == sec)),
+                None => true,
+            };
+            let tag_ok = match tag {
+                Some(t) => s.tags.iter().any(|x| x == t),
+                None => true,
+            };
+            sec_ok && tag_ok
+        };
+        // 1. Keep only matching symbols; a scoped view drops non-symbol entities.
+        for g in &mut self.groups {
+            g.symbols.retain(&keep_sym);
+            g.functions.clear();
+            g.tables.clear();
+            g.objects.clear();
+            g.can_messages.clear();
+        }
+        // 2. A group is kept if it has a surviving symbol, or is an ancestor of
+        //    one (so the path to it stays navigable).
+        let mut kept: BTreeSet<String> = self
+            .groups
+            .iter()
+            .filter(|g| !g.symbols.is_empty())
+            .map(|g| g.path.clone())
+            .collect();
+        for path in kept.iter().cloned().collect::<Vec<_>>() {
+            let mut cur = path.as_str();
+            while let Some(i) = cur.rfind('.') {
+                cur = &cur[..i];
+                kept.insert(cur.to_string());
+            }
+        }
+        // 3. Drop pruned groups and rebuild child links + the enum reference.
+        self.groups.retain(|g| kept.contains(&g.path));
+        for g in &mut self.groups {
+            g.children.retain(|c| kept.contains(c));
+        }
+        let used: BTreeSet<&str> = self
+            .groups
+            .iter()
+            .flat_map(|g| g.symbols.iter())
+            .filter_map(|s| s.enum_ref.as_deref())
+            .collect();
+        self.enums.retain(|e| used.contains(e.name.as_str()));
+    }
 }
 
 #[cfg(test)]
@@ -552,6 +614,65 @@ mod tests {
     fn tags_are_sorted_deduped_across_symbols() {
         let tags = stats_model().tags();
         assert_eq!(tags, vec!["engine".to_string(), "fuel".to_string()]);
+    }
+
+    // ---- #34: --only-security / --only-tag scoped generation ----
+
+    #[test]
+    fn retain_scoped_by_security_keeps_only_matching_symbols() {
+        let mut m = stats_model();
+        m.retain_scoped(Some(&["Tune".to_string()]), None);
+        // Root (ancestor) + Root.Engine (has the Tune symbol) survive.
+        assert_eq!(
+            m.groups.iter().map(|g| g.path.as_str()).collect::<Vec<_>>(),
+            vec!["Root", "Root.Engine"]
+        );
+        let eng = m.groups.iter().find(|g| g.path == "Root.Engine").unwrap();
+        assert_eq!(eng.symbols.len(), 1);
+        assert_eq!(eng.symbols[0].path, "Root.Engine.Speed");
+        // A scoped view drops non-symbol entities.
+        assert!(
+            eng.functions.is_empty(),
+            "functions dropped in a scoped view"
+        );
+        // The ancestor still links its kept child.
+        let root = m.groups.iter().find(|g| g.path == "Root").unwrap();
+        assert_eq!(root.children, vec!["Root.Engine".to_string()]);
+        // The Calibration-only enum reference set is rebuilt (Switch unused here).
+        assert!(m.enums.is_empty());
+    }
+
+    #[test]
+    fn retain_scoped_by_tag_keeps_only_tagged_symbols() {
+        let mut m = stats_model();
+        m.retain_scoped(None, Some("fuel"));
+        let eng = m.groups.iter().find(|g| g.path == "Root.Engine").unwrap();
+        assert_eq!(eng.symbols.len(), 1);
+        assert_eq!(
+            eng.symbols[0].path, "Root.Engine.Gain",
+            "only the fuel-tagged symbol"
+        );
+    }
+
+    #[test]
+    fn retain_scoped_intersects_security_and_tag_and_prunes_empty() {
+        let mut m = stats_model();
+        // Tune AND fuel: Speed is Tune-but-not-fuel, Gain is fuel-but-Calibration
+        // → nothing matches → every group is pruned.
+        m.retain_scoped(Some(&["Tune".to_string()]), Some("fuel"));
+        assert!(m.groups.is_empty(), "no symbol matches both → empty model");
+    }
+
+    #[test]
+    fn retain_scoped_multiple_security_levels() {
+        let mut m = stats_model();
+        m.retain_scoped(Some(&["Tune".to_string(), "Calibration".to_string()]), None);
+        let eng = m.groups.iter().find(|g| g.path == "Root.Engine").unwrap();
+        assert_eq!(
+            eng.symbols.len(),
+            2,
+            "both Tune and Calibration symbols kept"
+        );
     }
 
     #[test]
