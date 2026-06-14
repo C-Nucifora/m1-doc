@@ -97,6 +97,7 @@ fn table_doc(sym: &Symbol) -> TableDoc {
         anchor: anchor_slug(&sym.path),
         axes,
         output_unit,
+        def_line: sym.def_line,
     }
 }
 
@@ -147,6 +148,7 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind, table: &SymbolTable) -> SymbolD
         security: sym.security.clone(),
         enum_ref: enum_name,
         classname: sym.classname.clone(),
+        def_line: sym.def_line,
     }
 }
 
@@ -164,6 +166,7 @@ fn object_doc(sym: &Symbol, table: &SymbolTable) -> ObjectDoc {
         anchor: anchor_slug(&sym.path),
         class: sym.class.clone(),
         members,
+        def_line: sym.def_line,
     }
 }
 
@@ -204,6 +207,11 @@ fn can_message_doc(sym: &Symbol, table: &SymbolTable) -> CanMessageDoc {
         can_id: can.and_then(|c| c.can_id),
         dlc: can.and_then(|c| c.dlc),
         signals,
+        // A CAN message is sourced from a `.m1dbc`, so its `def_line` indexes
+        // that DBC — not the `Project.m1prj` the model's `m1prj_path` points at.
+        // Pairing the two would build a wrong link, so we leave this `None` and
+        // emit no jump-to-declaration for CAN entities (#57).
+        def_line: None,
     }
 }
 
@@ -324,6 +332,12 @@ pub fn load(
     project.infer_return_types(&parsed);
 
     let mut model = build_model(&project, title);
+
+    // Record the project file's location, relative to the project dir, so the
+    // renderers can build a jump-to-declaration link for every project-sourced
+    // symbol (its `def_line` is the line within this file) (#57). This is the
+    // same constant path for every symbol, so it lives once on the model.
+    model.m1prj_path = Some(relative_source_path(project_dir, project_path));
 
     // Relationship graph (#37): call/read/write edges from the parsed scripts,
     // plus the reference edges from the model's resolved aliases (#29). Built
@@ -472,6 +486,9 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
         // The relationship graph needs the parsed scripts, which only `load`
         // has; it fills this in. `build_model` (symbols-only) leaves it empty.
         graph: crate::model::ProjectGraph::default(),
+        // `build_model` works from symbols alone and has no project path; `load`
+        // fills this in once it knows the on-disk `.m1prj` location (#57).
+        m1prj_path: None,
     }
 }
 
@@ -552,6 +569,7 @@ fn reference_doc(sym: &Symbol) -> ReferenceDoc {
         anchor: anchor_slug(&sym.path),
         target_raw: sym.reference_target.clone().unwrap_or_default(),
         target_resolved: None,
+        def_line: sym.def_line,
     }
 }
 
@@ -1342,6 +1360,55 @@ mod tests {
         assert_eq!(none.target_raw, "");
         assert_eq!(none.target_resolved, None);
         assert!(!none.anchor.is_empty(), "references participate in anchors");
+    }
+
+    /// #57: a project-sourced symbol must carry the `def_line` of its
+    /// `<Component>` declaration, and the model must record the project file
+    /// path once — together these let the renderers build a jump-to-declaration
+    /// link. The line is 0-based (the `Speed` channel is on the 5th line of the
+    /// XML below → `def_line == 4`).
+    #[test]
+    fn symbol_carries_def_line_and_model_records_m1prj_path() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        fs::write(
+            &prj_path,
+            "<?xml version=\"1.0\"?>\n\
+<MoTeCM1BuildSession>\n\
+ <Project Name=\"Demo\" TargetHardware=\"ecu120\">\n\
+  <ComponentStream><List>\n\
+   <Component Classname=\"BuiltIn.Channel\" Name=\"Root.Engine.Speed\"><Props Type=\"f32\"/></Component>\n\
+  </List></ComponentStream>\n\
+ </Project>\n\
+</MoTeCM1BuildSession>",
+        )
+        .unwrap();
+
+        let model = load(&prj_path, "Demo".into()).unwrap();
+        assert_eq!(
+            model.m1prj_path.as_deref(),
+            Some("Project.m1prj"),
+            "the model must record the project-relative .m1prj path; got {:?}",
+            model.m1prj_path
+        );
+        let speed = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group")
+            .symbols
+            .iter()
+            .find(|s| s.path == "Root.Engine.Speed")
+            .expect("Speed channel");
+        assert_eq!(
+            speed.def_line,
+            Some(4),
+            "the channel must carry the 0-based line of its declaration; got {:?}",
+            speed.def_line
+        );
     }
 
     /// #37: the relationship graph extracts a call edge (one function invoking

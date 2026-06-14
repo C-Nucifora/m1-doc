@@ -116,6 +116,43 @@ fn source_line(path: &str, base: Option<&str>) -> String {
     }
 }
 
+/// Builds jump-to-declaration links for project-sourced entities (channels,
+/// parameters, constants, tables, objects, references) (#57). Every such entity
+/// is declared in the same `Project.m1prj`, so the path lives once on the model;
+/// only the per-entity `def_line` varies. A link is built only when a
+/// `--source-base` *and* the project path are both known.
+struct SourceLinker<'a> {
+    /// `--source-base` (a blob-URL prefix), trailing slash trimmed. `None`
+    /// degrades every link to plain text — the row is unchanged.
+    base: Option<String>,
+    /// The project-relative `.m1prj` path the entity `def_line`s index into.
+    m1prj_path: Option<&'a str>,
+}
+
+impl<'a> SourceLinker<'a> {
+    /// A Markdown `[src](url)` link to an entity's declaration when both a
+    /// source base and the project path are known and the entity carries a
+    /// `def_line` — otherwise `None` (degrade to no link, never invent one).
+    /// `def_line` is 0-based; GitHub line anchors are 1-based, so it is bumped
+    /// by one (`def_line 41` → `#L42`).
+    fn link(&self, def_line: Option<u32>) -> Option<String> {
+        let base = self.base.as_deref()?;
+        let path = self.m1prj_path?;
+        let line = def_line?;
+        Some(format!("[src]({base}/{path}#L{})", line + 1))
+    }
+
+    /// The `link` rendered as a leading ` ` + the link, ready to append to a
+    /// heading or cell; empty when no link could be built. Keeps the common
+    /// (no-link) case byte-identical to before.
+    fn suffix(&self, def_line: Option<u32>) -> String {
+        match self.link(def_line) {
+            Some(l) => format!(" {l}"),
+            None => String::new(),
+        }
+    }
+}
+
 /// Render one function entry as a `### <path>` subsection with its call rate,
 /// input list, optional return type, source link, and, when present, an
 /// `**Annotations:**` block. With `include_source` the script body is embedded
@@ -164,10 +201,10 @@ fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
 /// Render one calibration table entry: an anchored `### <path>` heading and a
 /// dimensionality line — e.g. `2-D table — 16 (rpm) × 12 (kPa) → deg`. When the
 /// shape is unknown (no `.m1cfg` loaded), say so rather than dropping the table.
-fn render_table(t: &TableDoc) -> String {
+fn render_table(t: &TableDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", t.anchor);
-    let _ = writeln!(out, "### {}\n", t.path);
+    let _ = writeln!(out, "### {}{}\n", t.path, links.suffix(t.def_line));
     if t.axes.is_empty() {
         let _ = writeln!(out, "Table — shape requires a loaded `.m1cfg`\n");
     } else {
@@ -271,10 +308,10 @@ fn scale_cell(s: &crate::model::CanSignalDoc) -> String {
 
 /// Render one package-object entry: an anchored `### <path>` heading, its class,
 /// and a bullet list of its immediate members (#28).
-fn render_object(o: &ObjectDoc) -> String {
+fn render_object(o: &ObjectDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", o.anchor);
-    let _ = writeln!(out, "### {}\n", o.path);
+    let _ = writeln!(out, "### {}{}\n", o.path, links.suffix(o.def_line));
     let _ = writeln!(out, "**Class:** {}\n", o.class.as_deref().unwrap_or("—"));
     if o.members.is_empty() {
         let _ = writeln!(out, "(no members)\n");
@@ -291,7 +328,7 @@ fn render_object(o: &ObjectDoc) -> String {
 /// Render one CAN message: an anchored `### <path>` heading with its frame id
 /// (hex) and dlc, then a per-signal table of bit layout, scale, range and unit.
 /// A message with no signals is still listed (degrade, never drop) (#28).
-fn render_can_message(m: &CanMessageDoc) -> String {
+fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", m.anchor);
     let id = match m.can_id {
@@ -302,7 +339,12 @@ fn render_can_message(m: &CanMessageDoc) -> String {
         .dlc
         .map(|d| d.to_string())
         .unwrap_or_else(|| "—".to_string());
-    let _ = writeln!(out, "### {} (id {id}, dlc {dlc})\n", m.path);
+    let _ = writeln!(
+        out,
+        "### {} (id {id}, dlc {dlc}){}\n",
+        m.path,
+        links.suffix(m.def_line)
+    );
     if m.signals.is_empty() {
         let _ = writeln!(out, "(no signals)\n");
         return out;
@@ -352,6 +394,7 @@ fn render_group(
     xrefs: &CrossRefs,
     graph: &ProjectGraph,
     opts: &RenderOptions,
+    links: &SourceLinker,
 ) -> String {
     let mut out = String::new();
     // Breadcrumb of ancestor links, then the page heading.
@@ -422,12 +465,15 @@ fn render_group(
             // Leading inline anchor in the Name cell makes the row linkable as
             // `<group>.md#<anchor>`; it also carries the security/tags filter
             // metadata as data attributes for the HTML filter (#34). It passes
-            // into the HTML table verbatim.
+            // into the HTML table verbatim. A trailing `[src]` deep-links the
+            // symbol's declaration in the `.m1prj` when a source base is set
+            // (#57) — absent (and the cell unchanged) otherwise.
             let _ = writeln!(
                 out,
-                "| {}`{}` | {} | {} | {} | {} | {} | {} |{}{}",
+                "| {}`{}`{} | {} | {} | {} | {} | {} | {} |{}{}",
                 row_anchor(s),
                 s.path,
+                links.suffix(s.def_line),
                 type_cell(s, enum_anchors),
                 s.quantity.as_deref().unwrap_or("—"),
                 s.unit.as_deref().unwrap_or("—"),
@@ -443,19 +489,19 @@ fn render_group(
     if !group.tables.is_empty() {
         let _ = writeln!(out, "## Tables\n");
         for t in &group.tables {
-            out.push_str(&render_table(t));
+            out.push_str(&render_table(t, links));
         }
     }
     if !group.objects.is_empty() {
         let _ = writeln!(out, "## Objects\n");
         for o in &group.objects {
-            out.push_str(&render_object(o));
+            out.push_str(&render_object(o, links));
         }
     }
     if !group.can_messages.is_empty() {
         let _ = writeln!(out, "## CAN\n");
         for m in &group.can_messages {
-            out.push_str(&render_can_message(m));
+            out.push_str(&render_can_message(m, links));
         }
     }
     if !group.functions.is_empty() {
@@ -464,7 +510,7 @@ fn render_group(
             out.push_str(&render_function(f, opts));
         }
     }
-    render_references(&mut out, group, xrefs);
+    render_references(&mut out, group, xrefs, links);
     render_used_by(&mut out, group, xrefs);
     out
 }
@@ -518,7 +564,7 @@ fn xref_link(label: &str, loc: Option<&(String, &str)>) -> String {
 /// The target deep-links to the symbol when it resolved to one we document, else
 /// the raw `<Props Target>` string is shown verbatim (`—` when it has none) so
 /// the page never invents or drops a target (#29).
-fn render_references(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs) {
+fn render_references(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs, links: &SourceLinker) {
     if group.references.is_empty() {
         return;
     }
@@ -533,8 +579,11 @@ fn render_references(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs) {
         };
         let _ = writeln!(
             out,
-            "| <a id=\"{}\"></a>`{}` | {} |",
-            r.anchor, r.path, target
+            "| <a id=\"{}\"></a>`{}`{} | {} |",
+            r.anchor,
+            r.path,
+            links.suffix(r.def_line),
+            target
         );
     }
     let _ = writeln!(out);
@@ -839,6 +888,15 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
         .collect();
     // Cross-reference link tables, built once from the whole model (#29).
     let xrefs = build_cross_refs(model);
+    // Jump-to-declaration linker, built once: the project path is constant for
+    // every symbol, only `def_line` varies (#57).
+    let links = SourceLinker {
+        base: opts
+            .source_base
+            .as_deref()
+            .map(|b| b.trim_end_matches('/').to_string()),
+        m1prj_path: model.m1prj_path.as_deref(),
+    };
     let mut files = vec![RenderedFile {
         path: "index.md".to_string(),
         body: render_index(model, opts),
@@ -846,7 +904,7 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
     for g in &model.groups {
         files.push(RenderedFile {
             path: group_filename(&g.path),
-            body: render_group(g, &enum_anchors, &xrefs, &model.graph, opts),
+            body: render_group(g, &enum_anchors, &xrefs, &model.graph, opts, &links),
         });
     }
     // Focused `--graph <group>` subsystem page (#37), when requested.
@@ -904,6 +962,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 
@@ -941,6 +1000,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 
@@ -997,6 +1057,7 @@ mod tests {
                 },
             ],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 
@@ -1146,6 +1207,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 
@@ -1262,6 +1324,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1316,6 +1379,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1390,6 +1454,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1427,6 +1492,7 @@ mod tests {
                 open: false,
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files
@@ -1468,6 +1534,7 @@ mod tests {
                 open: true,
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "enums.md").unwrap();
@@ -1504,6 +1571,7 @@ mod tests {
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1536,10 +1604,12 @@ mod tests {
                         },
                     ],
                     output_unit: Some("deg".into()),
+                    def_line: None,
                 }],
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1575,10 +1645,12 @@ mod tests {
                     anchor: "root-engine-fuelmap".into(),
                     axes: vec![],
                     output_unit: None,
+                    def_line: None,
                 }],
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1603,6 +1675,7 @@ mod tests {
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files
@@ -1644,6 +1717,7 @@ mod tests {
                 },
             ],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let index = &files[0];
@@ -1687,6 +1761,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1735,6 +1810,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1770,10 +1846,12 @@ mod tests {
                         "Root.Inputs.OilP.Calibration".into(),
                         "Root.Inputs.OilP.Resource".into(),
                     ],
+                    def_line: None,
                 }],
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
@@ -1820,10 +1898,12 @@ mod tests {
                         range: Some((0.0, 8000.0)),
                         unit: Some("rpm".into()),
                     }],
+                    def_line: None,
                 }],
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
@@ -1863,10 +1943,12 @@ mod tests {
                     can_id: None,
                     dlc: None,
                     signals: vec![],
+                    def_line: None,
                 }],
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
@@ -1906,6 +1988,7 @@ mod tests {
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
@@ -2018,6 +2101,7 @@ mod tests {
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -2059,17 +2143,20 @@ mod tests {
                         anchor: "root-sensors-alias".into(),
                         target_raw: "This.OilP".into(),
                         target_resolved: Some("Root.Sensors.OilP".into()),
+                        def_line: None,
                     },
                     ReferenceDoc {
                         path: "Root.Sensors.Dangling".into(),
                         anchor: "root-sensors-dangling".into(),
                         target_raw: "Nowhere.X".into(),
                         target_resolved: None,
+                        def_line: None,
                     },
                 ],
                 ..Default::default()
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let files = render(&model);
         let page = files
@@ -2185,6 +2272,119 @@ mod tests {
                 .contains("[Subsystem: Root.Engine](graph.root-engine.md)"),
             "index must link the subsystem graph; got:\n{}",
             index.body
+        );
+    }
+
+    // ---- #57: source/definition links for symbols, not just functions ----
+
+    /// A model with a project file path and a channel/parameter/constant, a
+    /// table, an object and a reference — each carrying a `def_line` — so the
+    /// renderer can build a jump-to-declaration link to the `.m1prj`.
+    fn source_link_model() -> DocModel {
+        use crate::model::{ObjectDoc, ReferenceDoc, TableDoc};
+        DocModel {
+            title: "Demo".into(),
+            target_hardware: None,
+            enums: vec![],
+            m1prj_path: Some("Project.m1prj".into()),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Engine.Speed".into(),
+                    anchor: "root-engine-speed".into(),
+                    kind: SymbolDocKind::Channel,
+                    type_label: "f32".into(),
+                    def_line: Some(41),
+                    ..Default::default()
+                }],
+                tables: vec![TableDoc {
+                    path: "Root.Engine.IgnitionMap".into(),
+                    anchor: "root-engine-ignitionmap".into(),
+                    axes: vec![],
+                    output_unit: None,
+                    def_line: Some(50),
+                }],
+                objects: vec![ObjectDoc {
+                    path: "Root.Engine.OilP".into(),
+                    anchor: "root-engine-oilp".into(),
+                    class: Some("MoTeC Input.Sensor".into()),
+                    members: vec![],
+                    def_line: Some(60),
+                }],
+                references: vec![ReferenceDoc {
+                    path: "Root.Engine.Alias".into(),
+                    anchor: "root-engine-alias".into(),
+                    target_raw: "This.Speed".into(),
+                    target_resolved: None,
+                    def_line: Some(70),
+                }],
+                ..Default::default()
+            }],
+            graph: crate::model::ProjectGraph::default(),
+        }
+    }
+
+    #[test]
+    fn symbol_row_links_to_its_declaration_when_source_base_set() {
+        let opts = RenderOptions {
+            source_base: Some("https://example/blob/main".into()),
+            ..Default::default()
+        };
+        let files = render_with(&source_link_model(), &opts);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        // def_line is 0-based (41) → 1-based GitHub anchor L42.
+        assert!(
+            page.body
+                .contains("[src](https://example/blob/main/Project.m1prj#L42)"),
+            "symbol row must deep-link its declaration; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn table_object_and_reference_link_to_their_declaration() {
+        let opts = RenderOptions {
+            source_base: Some("https://example/blob/main".into()),
+            ..Default::default()
+        };
+        let files = render_with(&source_link_model(), &opts);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        // Table (line 50 → L51), object (60 → L61), reference (70 → L71).
+        assert!(
+            page.body
+                .contains("https://example/blob/main/Project.m1prj#L51"),
+            "table must deep-link its declaration; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains("https://example/blob/main/Project.m1prj#L61"),
+            "object must deep-link its declaration; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains("https://example/blob/main/Project.m1prj#L71"),
+            "reference must deep-link its declaration; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn symbol_source_link_is_absent_without_a_source_base() {
+        // No `source_base` → no invented link; the common-case row is unchanged.
+        let files = render(&source_link_model());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            !page.body.contains("[src]("),
+            "must not emit a source link without a source_base; got:\n{}",
+            page.body
+        );
+        // The plain channel row is intact (no trailing link in the Name cell).
+        assert!(
+            page.body.contains("`Root.Engine.Speed` | f32 |"),
+            "row layout must be unchanged without a source link; got:\n{}",
+            page.body
         );
     }
 }

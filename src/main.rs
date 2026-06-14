@@ -30,10 +30,11 @@ struct Args {
     /// Index heading (defaults to the project file's directory name).
     #[arg(long)]
     title: Option<String>,
-    /// Base URL prepended to each function's source path to build a link to the
-    /// `.m1scr` in the published site (e.g.
-    /// `https://github.com/UQRacing/EV-M1/blob/main`). Without it, source paths
-    /// are shown as plain text.
+    /// Base URL prepended to source paths to build links into the published
+    /// site (e.g. `https://github.com/UQRacing/EV-M1/blob/main`): each function
+    /// links to its `.m1scr`, and every channel/parameter/constant/table/object/
+    /// reference gets a jump-to-declaration link to its `<Component>` line in
+    /// `Project.m1prj`. Without it, sources are shown as plain text / omitted.
     #[arg(long, alias = "repo-url")]
     source_base: Option<String>,
     /// Embed each function's script body in a collapsible block (off by default).
