@@ -335,6 +335,51 @@ mod tests {
         );
     }
 
+    // `is_function` also matches SymbolKind::Method (BuiltIn.MethodUser), so a
+    // method must be collected as a FunctionDoc under its group. All other
+    // loader tests use FuncUser only, leaving the Method branch uncovered — a
+    // regression dropping methods from docs would otherwise go unnoticed (#21).
+    const METHOD_PROJECT: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.MethodUser" Name="Root.Engine.Control">
+    <Signature ReturnType="bool">
+     <Params>
+      <Param Name="Demand" Type="f32"/>
+     </Params>
+    </Signature>
+   </Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+
+    #[test]
+    fn method_collected_under_group() {
+        let project = Project::from_xml(METHOD_PROJECT).unwrap();
+        let model = build_model(&project, "Demo".into());
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group");
+        assert_eq!(
+            eng.functions.len(),
+            1,
+            "a BuiltIn.MethodUser must be collected as a function; got {:?}",
+            eng.functions
+        );
+        let m = &eng.functions[0];
+        assert_eq!(m.path, "Root.Engine.Control");
+        assert_eq!(
+            m.inputs,
+            vec![("Demand".to_string(), "float".to_string())],
+            "unexpected method inputs: {:?}",
+            m.inputs
+        );
+    }
+
     #[test]
     fn function_without_signature_has_empty_inputs() {
         // A FuncUser with no <Signature> produces in_params = None; the
