@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<MoTeCM1BuildSession><Project Name="Synth" TargetHardware="ecu120">
+<DataTypes>
+<Type Name="Drive State" Storage="enum" Default="Off">
+<Enum Name="Off" ContainerOrder="0"/>
+<Enum Name="On" ContainerOrder="1"/>
+</Type>
+</DataTypes>
+<ComponentStream><List>
+<Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+<Component Classname="BuiltIn.GroupCompound" Name="Root.Engine.Fuel"/>
+<Component Classname="BuiltIn.GroupCompound" Name="Root.Engine.Fuel.Pump"/>
+<Component Classname="BuiltIn.Channel" Name="Root.Engine.Speed"><Props Type="f32" Qty="AngularVelocity" Security="Tune"><Locale><Default Unit="rpm"/></Locale></Props></Component>
+<Component Classname="BuiltIn.Channel" Name="Root.Engine.State"><Props Type="::This.Drive State"/></Component>
+<Component Classname="BuiltIn.Constant" Name="Root.Engine.MaxRpm"><Props Value="9000" Type="u16"/></Component>
+<Component Classname="BuiltIn.Table" Name="Root.Engine.IgnitionMap"/>
+<Component Classname="MoTeC Input.Sensor" Name="Root.Engine.Fuel.Pump.OilP"/>
+<Component Classname="BuiltIn.Channel" Name="Root.Engine.Fuel.Pump.Demand"><Props Type="f32"><Locale><Default Unit="%"/></Locale></Props></Component>
+</List></ComponentStream></Project></MoTeCM1BuildSession>
