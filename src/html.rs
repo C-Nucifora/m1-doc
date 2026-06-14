@@ -218,6 +218,7 @@ mod tests {
                     ..Default::default()
                 }],
                 functions: vec![],
+                tables: vec![],
                 children: vec![],
             }],
         }
