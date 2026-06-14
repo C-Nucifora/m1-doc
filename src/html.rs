@@ -1070,6 +1070,7 @@ mod tests {
                 children: vec![],
             }],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 
@@ -1334,6 +1335,7 @@ mod tests {
                 },
             ],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 

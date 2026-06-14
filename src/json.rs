@@ -29,6 +29,9 @@ pub fn render(model: &DocModel) -> String {
         w.field_u32("schema_version", SCHEMA_VERSION);
         w.field_str("title", &model.title);
         w.field_opt_str("target_hardware", model.target_hardware.as_deref());
+        // The project file every entity's `def_line` indexes into (#57). A
+        // consumer pairs it with a `def_line` to build a jump-to-declaration link.
+        w.field_opt_str("m1prj_path", model.m1prj_path.as_deref());
         w.field("groups", |w| w.array(&model.groups, write_group));
         w.field("enums", |w| w.array(&model.enums, write_enum));
         // The relationship graph (#37): nodes are the symbol paths above; this
@@ -80,6 +83,7 @@ fn write_reference(w: &mut Writer, r: &ReferenceDoc) {
         w.field_str("anchor", &r.anchor);
         w.field_str("target_raw", &r.target_raw);
         w.field_opt_str("target_resolved", r.target_resolved.as_deref());
+        w.field_opt_u32("def_line", r.def_line);
     });
 }
 
@@ -96,6 +100,7 @@ fn write_symbol(w: &mut Writer, s: &SymbolDoc) {
         w.field_opt_str("security", s.security.as_deref());
         w.field_opt_str("enum_ref", s.enum_ref.as_deref());
         w.field_opt_str("classname", s.classname.as_deref());
+        w.field_opt_u32("def_line", s.def_line);
         w.field("tags", |w| w.string_array(&s.tags));
     });
 }
@@ -141,6 +146,7 @@ fn write_table(w: &mut Writer, t: &TableDoc) {
             })
         });
         w.field_opt_str("output_unit", t.output_unit.as_deref());
+        w.field_opt_u32("def_line", t.def_line);
     });
 }
 
@@ -150,6 +156,7 @@ fn write_object(w: &mut Writer, o: &ObjectDoc) {
         w.field_str("anchor", &o.anchor);
         w.field_opt_str("class", o.class.as_deref());
         w.field("members", |w| w.string_array(&o.members));
+        w.field_opt_u32("def_line", o.def_line);
     });
 }
 
@@ -160,6 +167,7 @@ fn write_can_message(w: &mut Writer, m: &CanMessageDoc) {
         w.field_opt_u32("id", m.can_id);
         w.field_opt_u32("dlc", m.dlc);
         w.field("signals", |w| w.array(&m.signals, write_can_signal));
+        w.field_opt_u32("def_line", m.def_line);
     });
 }
 
@@ -369,6 +377,7 @@ mod tests {
         DocModel {
             title: "Demo \"Project\"".into(),
             target_hardware: Some("ecu120".into()),
+            m1prj_path: Some("Project.m1prj".into()),
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
                 symbols: vec![SymbolDoc {
@@ -383,6 +392,7 @@ mod tests {
                     security: Some("Engineer".into()),
                     enum_ref: None,
                     classname: Some("BuiltIn.Channel".into()),
+                    def_line: Some(41),
                     tags: vec!["engine".into(), "fuel".into()],
                 }],
                 functions: vec![FunctionDoc {
@@ -406,18 +416,21 @@ mod tests {
                         unit: Some("rpm".into()),
                     }],
                     output_unit: Some("deg".into()),
+                    def_line: Some(50),
                 }],
                 objects: vec![ObjectDoc {
                     path: "Root.Engine.OilP".into(),
                     anchor: "root-engine-oilp".into(),
                     class: Some("MoTeC Input.Sensor".into()),
                     members: vec!["Root.Engine.OilP.Resource".into()],
+                    def_line: Some(60),
                 }],
                 can_messages: vec![CanMessageDoc {
                     path: "Root.Engine.Frame".into(),
                     anchor: "root-engine-frame".into(),
                     can_id: Some(160),
                     dlc: Some(8),
+                    def_line: Some(70),
                     signals: vec![CanSignalDoc {
                         path: "Root.Engine.Frame.Rpm".into(),
                         anchor: "root-engine-frame-rpm".into(),
@@ -481,6 +494,12 @@ mod tests {
             "\"kind\": \"requires-finite\"",
             "\"output_unit\": \"deg\"",
             "\"class\": \"MoTeC Input.Sensor\"",
+            // #57: the project path and per-entity declaration lines.
+            "\"m1prj_path\": \"Project.m1prj\"",
+            "\"def_line\": 41",
+            "\"def_line\": 50",
+            "\"def_line\": 60",
+            "\"def_line\": 70",
             "\"id\": 160",
             "\"dlc\": 8",
             "\"range\": [0.0, 8000.0]",
@@ -511,6 +530,7 @@ mod tests {
             }],
             enums: vec![],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let json = render(&model);
         assert!(json.contains("\"quantity\": null"), "got:\n{json}");
@@ -565,6 +585,7 @@ mod tests {
             }],
             enums: vec![],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         };
         let json = render(&model);
         assert!(json.contains("\"log_rate_hz\": null"), "got:\n{json}");
@@ -583,12 +604,14 @@ mod tests {
                         anchor: "root-alias".into(),
                         target_raw: "This.Value".into(),
                         target_resolved: Some("Root.Value".into()),
+                        def_line: Some(12),
                     },
                     ReferenceDoc {
                         path: "Root.Dangling".into(),
                         anchor: "root-dangling".into(),
                         target_raw: "Off.Model".into(),
                         target_resolved: None,
+                        def_line: None,
                     },
                 ],
                 ..Default::default()

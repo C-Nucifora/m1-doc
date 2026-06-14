@@ -112,6 +112,11 @@ pub struct SymbolDoc {
     /// tell a plain channel from a generated IO method or a sensor input. `None`
     /// for symbols not sourced from a project/DBC `<Component>`.
     pub classname: Option<String>,
+    /// 0-based line of this symbol's `<Component>` declaration in the project
+    /// file ([`DocModel::m1prj_path`]), so a reader can jump to where it is
+    /// declared (#57). `None` for symbols not sourced from the `.m1prj`
+    /// (e.g. CAN signals from a `.m1dbc`).
+    pub def_line: Option<u32>,
 }
 
 /// One package-class object component — a `SymbolKind::Object`, e.g. a
@@ -126,6 +131,10 @@ pub struct ObjectDoc {
     pub class: Option<String>,
     /// Full paths of the object's immediate members, sorted. Empty for a leaf.
     pub members: Vec<String>,
+    /// 0-based line of this object's `<Component>` declaration in the project
+    /// file ([`DocModel::m1prj_path`]), for jump-to-declaration (#57). `None`
+    /// when not sourced from the `.m1prj`.
+    pub def_line: Option<u32>,
 }
 
 /// One CAN signal within a message frame (a `BuiltIn.CAN.Signal` channel): its
@@ -157,6 +166,11 @@ pub struct CanMessageDoc {
     pub dlc: Option<u32>,
     /// Signals in this frame, in bit order (`start_bit`, then path).
     pub signals: Vec<CanSignalDoc>,
+    /// 0-based line of this message's `<Component>` declaration in the project
+    /// file ([`DocModel::m1prj_path`]), for jump-to-declaration (#57). A CAN
+    /// message defined only in a `.m1dbc` has no `.m1prj` line, so this is
+    /// `None` and no link is shown.
+    pub def_line: Option<u32>,
 }
 
 /// One documented enum type used in the project: its name, enumerators (member
@@ -191,6 +205,10 @@ pub struct TableDoc {
     pub axes: Vec<TableAxisDoc>,
     /// Unit of the interpolated output value (the table body), when known.
     pub output_unit: Option<String>,
+    /// 0-based line of this table's `<Component>` declaration in the project
+    /// file ([`DocModel::m1prj_path`]), for jump-to-declaration (#57). `None`
+    /// when not sourced from the `.m1prj`.
+    pub def_line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -231,6 +249,10 @@ pub struct ReferenceDoc {
     /// and build the inverse "used by"). `None` for unresolvable or off-model
     /// targets — the raw string is shown instead.
     pub target_resolved: Option<String>,
+    /// 0-based line of this reference's `<Component>` declaration in the project
+    /// file ([`DocModel::m1prj_path`]), for jump-to-declaration (#57). `None`
+    /// when not sourced from the `.m1prj`.
+    pub def_line: Option<u32>,
 }
 
 /// One node in the group tree — a group at any depth (`Root`, `Root.Engine`,
@@ -315,6 +337,13 @@ pub struct DocModel {
     pub enums: Vec<EnumDoc>,
     /// The relationship graph: call/read/write/reference edges (#37).
     pub graph: ProjectGraph,
+    /// Project-relative path of the `Project.m1prj` every project-sourced symbol
+    /// is declared in (e.g. `Project.m1prj`), forward-slashed. Stored once on
+    /// the model because the path is the same for every symbol; only the
+    /// per-entity `def_line` varies. Combined with a `--source-base` and an
+    /// entity's `def_line`, the renderers build a jump-to-declaration link
+    /// (#57). `None` when the path could not be determined.
+    pub m1prj_path: Option<String>,
 }
 
 /// Project-wide counts by kind, plus structural metrics, for the overview
@@ -646,6 +675,7 @@ mod tests {
                 },
             ],
             graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
         }
     }
 
