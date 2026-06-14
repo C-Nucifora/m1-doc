@@ -2,7 +2,8 @@
 //! This is the canonical output; the HTML renderer (P3) consumes these files.
 
 use crate::model::{
-    AnnotationDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, TableDoc,
+    AnnotationDoc, CanMessageDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, ObjectDoc, SymbolDoc,
+    SymbolDocKind, TableDoc,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -138,6 +139,118 @@ fn render_table(t: &TableDoc) -> String {
     out
 }
 
+/// The plain builtin classname expected for a documented symbol kind. A row
+/// whose classname differs from this (or that has none of the expected form)
+/// carries information worth showing — a sensor input, a generated IO method, a
+/// calibration channel — so the Class column appears only then (#28).
+fn plain_builtin(kind: SymbolDocKind) -> &'static str {
+    match kind {
+        SymbolDocKind::Channel => "BuiltIn.Channel",
+        SymbolDocKind::Parameter => "BuiltIn.Parameter",
+        SymbolDocKind::Constant => "BuiltIn.Constant",
+    }
+}
+
+/// Whether a section's rows should carry a Class column: true when any row has a
+/// classname that isn't the plain builtin for its kind. Keeps the common case
+/// (every row a plain `BuiltIn.Channel`) uncluttered (#28).
+fn section_shows_class(rows: &[&SymbolDoc], kind: SymbolDocKind) -> bool {
+    let plain = plain_builtin(kind);
+    rows.iter()
+        .any(|s| s.classname.as_deref().is_some_and(|c| c != plain))
+}
+
+/// Format an `f64` for a CAN cell: trim trailing zeros so `0.50` → `0.5` and
+/// `2.0` → `2`.
+fn fmt_f64(v: f64) -> String {
+    let s = format!("{v:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-0" {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Render a CAN signal's scale cell — `×0.5 +2`, `×1 +0`, or `—` when neither a
+/// multiplier nor an offset is known.
+fn scale_cell(s: &crate::model::CanSignalDoc) -> String {
+    match (s.multiplier, s.offset) {
+        (None, None) => "—".to_string(),
+        (m, o) => {
+            let mult = fmt_f64(m.unwrap_or(1.0));
+            let off = o.unwrap_or(0.0);
+            let sign = if off < 0.0 { "-" } else { "+" };
+            format!("×{mult} {sign}{}", fmt_f64(off.abs()))
+        }
+    }
+}
+
+/// Render one package-object entry: an anchored `### <path>` heading, its class,
+/// and a bullet list of its immediate members (#28).
+fn render_object(o: &ObjectDoc) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", o.anchor);
+    let _ = writeln!(out, "### {}\n", o.path);
+    let _ = writeln!(out, "**Class:** {}\n", o.class.as_deref().unwrap_or("—"));
+    if o.members.is_empty() {
+        let _ = writeln!(out, "(no members)\n");
+    } else {
+        let _ = writeln!(out, "**Members:**\n");
+        for m in &o.members {
+            let _ = writeln!(out, "- `{m}`");
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Render one CAN message: an anchored `### <path>` heading with its frame id
+/// (hex) and dlc, then a per-signal table of bit layout, scale, range and unit.
+/// A message with no signals is still listed (degrade, never drop) (#28).
+fn render_can_message(m: &CanMessageDoc) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", m.anchor);
+    let id = match m.can_id {
+        Some(id) => format!("0x{id:X}"),
+        None => "—".to_string(),
+    };
+    let dlc = m
+        .dlc
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "—".to_string());
+    let _ = writeln!(out, "### {} (id {id}, dlc {dlc})\n", m.path);
+    if m.signals.is_empty() {
+        let _ = writeln!(out, "(no signals)\n");
+        return out;
+    }
+    let _ = writeln!(out, "| Signal | Bits | Scale | Range | Unit |");
+    let _ = writeln!(out, "| --- | --- | --- | --- | --- |");
+    for s in &m.signals {
+        let bits = match (s.start_bit, s.length) {
+            (Some(start), Some(len)) => format!("@{start}, {len}"),
+            (Some(start), None) => format!("@{start}"),
+            _ => "—".to_string(),
+        };
+        let range = match s.range {
+            Some((lo, hi)) => format!("{} .. {}", fmt_f64(lo), fmt_f64(hi)),
+            None => "—".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} |",
+            s.anchor,
+            last_segment(&s.path),
+            bits,
+            scale_cell(s),
+            range,
+            s.unit.as_deref().unwrap_or("—"),
+        );
+    }
+    out.push('\n');
+    out
+}
+
 /// Render a symbol's Type cell: an enum-typed symbol links to its entry in the
 /// Enums reference; everything else is the plain type label.
 fn type_cell(s: &SymbolDoc, enum_anchors: &HashMap<&str, &str>) -> String {
@@ -177,12 +290,18 @@ fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String 
         if rows.is_empty() {
             continue;
         }
+        // A Class column appears only when a row's class is not the plain
+        // builtin — so sensor inputs / generated methods are disambiguated
+        // without cluttering the common all-`BuiltIn.Channel` case (#28).
+        let show_class = section_shows_class(&rows, kind);
+        let class_h = if show_class { " Class |" } else { "" };
+        let class_s = if show_class { " --- |" } else { "" };
         let _ = writeln!(out, "## {}\n", kind.plural());
         let _ = writeln!(
             out,
-            "| Name | Type | Quantity | Unit | Base | Log rate | Security |"
+            "| Name | Type | Quantity | Unit | Base | Log rate | Security |{class_h}"
         );
-        let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- | --- |");
+        let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- | --- |{class_s}");
         for s in rows {
             // Show the base unit only when it differs from the display unit —
             // collapse the redundant case (and when either is absent).
@@ -190,11 +309,16 @@ fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String 
                 (Some(disp), Some(base)) if disp != base => base,
                 _ => "—",
             };
+            let class_cell = if show_class {
+                format!(" {} |", s.classname.as_deref().unwrap_or("—"))
+            } else {
+                String::new()
+            };
             // Leading inline anchor in the Name cell makes the row linkable as
             // `<group>.md#<anchor>`; it carries into the HTML table verbatim.
             let _ = writeln!(
                 out,
-                "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} | {} | {} |",
+                "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} | {} | {} |{}",
                 s.anchor,
                 s.path,
                 type_cell(s, enum_anchors),
@@ -203,6 +327,7 @@ fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String 
                 base,
                 format_rate(s.log_rate_hz),
                 s.security.as_deref().unwrap_or("—"),
+                class_cell,
             );
         }
         out.push('\n');
@@ -211,6 +336,18 @@ fn render_group(group: &GroupDoc, enum_anchors: &HashMap<&str, &str>) -> String 
         let _ = writeln!(out, "## Tables\n");
         for t in &group.tables {
             out.push_str(&render_table(t));
+        }
+    }
+    if !group.objects.is_empty() {
+        let _ = writeln!(out, "## Objects\n");
+        for o in &group.objects {
+            out.push_str(&render_object(o));
+        }
+    }
+    if !group.can_messages.is_empty() {
+        let _ = writeln!(out, "## CAN\n");
+        for m in &group.can_messages {
+            out.push_str(&render_can_message(m));
         }
     }
     if !group.functions.is_empty() {
@@ -325,6 +462,8 @@ mod tests {
                 }],
                 functions: vec![],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         }
@@ -357,6 +496,8 @@ mod tests {
                     },
                 ],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         }
@@ -403,6 +544,8 @@ mod tests {
                 }],
                 functions: vec![],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         }
@@ -514,6 +657,8 @@ mod tests {
                     ..Default::default()
                 }],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         };
@@ -563,6 +708,8 @@ mod tests {
                     ..Default::default()
                 }],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         };
@@ -632,6 +779,8 @@ mod tests {
                 ],
                 functions: vec![],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         };
@@ -908,6 +1057,8 @@ mod tests {
                     ..Default::default()
                 }],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         };
@@ -949,6 +1100,8 @@ mod tests {
                     },
                 ],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         };
@@ -963,6 +1116,202 @@ mod tests {
         assert!(
             page.body.contains("**Call rate:** —"),
             "untriggered function must show — ; got:\n{}",
+            page.body
+        );
+    }
+
+    // ---- #28: objects, CAN, classname column ----
+
+    #[test]
+    fn group_page_renders_objects_with_class_and_members() {
+        use crate::model::ObjectDoc;
+        let model = DocModel {
+            title: "Demo".into(),
+            enums: vec![],
+            groups: vec![GroupDoc {
+                path: "Root.Inputs".into(),
+                objects: vec![ObjectDoc {
+                    path: "Root.Inputs.OilP".into(),
+                    anchor: "root-inputs-oilp".into(),
+                    class: Some("MoTeC Input.Sensor".into()),
+                    members: vec![
+                        "Root.Inputs.OilP.Calibration".into(),
+                        "Root.Inputs.OilP.Resource".into(),
+                    ],
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
+        assert!(page.body.contains("## Objects"), "got:\n{}", page.body);
+        assert!(
+            page.body.contains("### Root.Inputs.OilP")
+                && page.body.contains("**Class:** MoTeC Input.Sensor"),
+            "object class missing; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("- `Root.Inputs.OilP.Resource`"),
+            "object members missing; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("<a id=\"root-inputs-oilp\"></a>"),
+            "object anchor missing; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn group_page_renders_can_message_and_signal_layout() {
+        use crate::model::{CanMessageDoc, CanSignalDoc};
+        let model = DocModel {
+            title: "Demo".into(),
+            enums: vec![],
+            groups: vec![GroupDoc {
+                path: "Bus".into(),
+                can_messages: vec![CanMessageDoc {
+                    path: "Bus.EngineData".into(),
+                    anchor: "bus-enginedata".into(),
+                    can_id: Some(160),
+                    dlc: Some(8),
+                    signals: vec![CanSignalDoc {
+                        path: "Bus.EngineData.EngineSpeed".into(),
+                        anchor: "bus-enginedata-enginespeed".into(),
+                        start_bit: Some(24),
+                        length: Some(16),
+                        multiplier: Some(0.5),
+                        offset: Some(0.0),
+                        range: Some((0.0, 8000.0)),
+                        unit: Some("rpm".into()),
+                    }],
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
+        assert!(page.body.contains("## CAN"), "got:\n{}", page.body);
+        // Frame id is shown in hex with the dlc.
+        assert!(
+            page.body.contains("### Bus.EngineData (id 0xA0, dlc 8)"),
+            "message frame line wrong; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains("| Signal | Bits | Scale | Range | Unit |"),
+            "signal table header missing; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains("`EngineSpeed` | @24, 16 | ×0.5 +0 | 0 .. 8000 | rpm |"),
+            "signal row wrong; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn can_message_with_no_signals_is_still_listed() {
+        use crate::model::CanMessageDoc;
+        let model = DocModel {
+            title: "Demo".into(),
+            enums: vec![],
+            groups: vec![GroupDoc {
+                path: "Bus".into(),
+                can_messages: vec![CanMessageDoc {
+                    path: "Bus.Empty".into(),
+                    anchor: "bus-empty".into(),
+                    can_id: None,
+                    dlc: None,
+                    signals: vec![],
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
+        assert!(
+            page.body.contains("### Bus.Empty (id —, dlc —)") && page.body.contains("(no signals)"),
+            "empty message must degrade, not drop; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn class_column_appears_only_for_non_plain_classnames() {
+        // One plain BuiltIn.Channel and one sensor-resource channel
+        // (MoTeC Input.Sensor.Resource) — the section must show a Class column.
+        let model = DocModel {
+            title: "Demo".into(),
+            enums: vec![],
+            groups: vec![GroupDoc {
+                path: "Root.Inputs".into(),
+                symbols: vec![
+                    SymbolDoc {
+                        path: "Root.Inputs.Plain".into(),
+                        kind: SymbolDocKind::Channel,
+                        type_label: "f32".into(),
+                        classname: Some("BuiltIn.Channel".into()),
+                        ..Default::default()
+                    },
+                    SymbolDoc {
+                        path: "Root.Inputs.Sensed".into(),
+                        kind: SymbolDocKind::Channel,
+                        type_label: "f32".into(),
+                        classname: Some("BuiltIn.ChannelCalibratable".into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
+        assert!(
+            page.body
+                .contains("| Name | Type | Quantity | Unit | Base | Log rate | Security | Class |"),
+            "Class column header missing; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("BuiltIn.ChannelCalibratable |"),
+            "non-plain class must be shown; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn class_column_absent_when_all_plain() {
+        // Every channel is a plain BuiltIn.Channel → no Class column (no clutter).
+        let model = DocModel {
+            title: "Demo".into(),
+            enums: vec![],
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Engine.Speed".into(),
+                    kind: SymbolDocKind::Channel,
+                    type_label: "f32".into(),
+                    classname: Some("BuiltIn.Channel".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body
+                .contains("| Name | Type | Quantity | Unit | Base | Log rate | Security |\n"),
+            "default header must be unchanged; got:\n{}",
+            page.body
+        );
+        assert!(
+            !page.body.contains("| Class |"),
+            "Class column must be absent when all plain; got:\n{}",
             page.body
         );
     }

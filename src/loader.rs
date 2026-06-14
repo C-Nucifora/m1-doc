@@ -5,8 +5,8 @@
 //! node so the full tree is navigable.
 
 use crate::model::{
-    AnnotationDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind,
-    TableAxisDoc, TableDoc, anchor_slug,
+    AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc,
+    ObjectDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc, anchor_slug,
 };
 use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind, SymbolTable};
@@ -36,6 +36,19 @@ fn doc_kind(kind: SymbolKind) -> Option<SymbolDocKind> {
 /// `true` when the symbol kind should be collected as a function.
 fn is_function(kind: SymbolKind) -> bool {
     matches!(kind, SymbolKind::Function | SymbolKind::Method)
+}
+
+/// `true` for a `BuiltIn.CAN.Signal` — a channel sourced from a `.m1dbc`. These
+/// are documented inside their parent message's CAN section (#28), not as plain
+/// channels, so the collector skips them in the normal symbol pass.
+fn is_can_signal(sym: &Symbol) -> bool {
+    sym.classname.as_deref() == Some("BuiltIn.CAN.Signal")
+}
+
+/// `true` for a `BuiltIn.CAN.Message` object — a CAN frame whose signals are
+/// grouped beneath it (#28), distinct from a plain package object.
+fn is_can_message(sym: &Symbol) -> bool {
+    sym.classname.as_deref() == Some("BuiltIn.CAN.Message")
 }
 
 /// Build a [`FunctionDoc`] from a function/method symbol.
@@ -128,6 +141,64 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind, table: &SymbolTable) -> SymbolD
         log_rate_hz: sym.log_rate_hz,
         security: sym.security.clone(),
         enum_ref: enum_name,
+        classname: sym.classname.clone(),
+    }
+}
+
+/// Build an [`ObjectDoc`] for a package-class object: its class and the paths of
+/// its immediate members (#28).
+fn object_doc(sym: &Symbol, table: &SymbolTable) -> ObjectDoc {
+    let mut members: Vec<String> = table
+        .immediate_children(&sym.path)
+        .iter()
+        .map(|c| c.path.clone())
+        .collect();
+    members.sort();
+    ObjectDoc {
+        path: sym.path.clone(),
+        anchor: anchor_slug(&sym.path),
+        class: sym.class.clone(),
+        members,
+    }
+}
+
+/// Build a [`CanSignalDoc`] from a `BuiltIn.CAN.Signal` channel (#28).
+fn can_signal_doc(sym: &Symbol) -> CanSignalDoc {
+    let can = sym.can.as_ref();
+    CanSignalDoc {
+        path: sym.path.clone(),
+        anchor: anchor_slug(&sym.path),
+        start_bit: can.and_then(|c| c.start_bit),
+        length: can.and_then(|c| c.length),
+        multiplier: can.and_then(|c| c.multiplier),
+        offset: can.and_then(|c| c.offset),
+        range: sym.dbc_range,
+        unit: sym.unit.clone(),
+    }
+}
+
+/// Build a [`CanMessageDoc`] from a `BuiltIn.CAN.Message` object, pulling its
+/// frame id/dlc and packing its `BuiltIn.CAN.Signal` children in bit order (#28).
+fn can_message_doc(sym: &Symbol, table: &SymbolTable) -> CanMessageDoc {
+    let can = sym.can.as_ref();
+    let mut signals: Vec<CanSignalDoc> = table
+        .immediate_children(&sym.path)
+        .iter()
+        .filter(|c| is_can_signal(c))
+        .map(|c| can_signal_doc(c))
+        .collect();
+    // Frame order: by start bit, then path for a stable tie-break.
+    signals.sort_by(|a, b| {
+        a.start_bit
+            .cmp(&b.start_bit)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    CanMessageDoc {
+        path: sym.path.clone(),
+        anchor: anchor_slug(&sym.path),
+        can_id: can.and_then(|c| c.can_id),
+        dlc: can.and_then(|c| c.dlc),
+        signals,
     }
 }
 
@@ -291,6 +362,12 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
     let table = project.symbols();
     let mut groups: BTreeMap<String, GroupDoc> = BTreeMap::new();
     for sym in table.iter() {
+        // CAN signals are documented inside their parent message's CAN section
+        // (#28), not as plain channels — skip them here so they neither double-
+        // list nor spawn a synthetic group at the message path.
+        if is_can_signal(sym) {
+            continue;
+        }
         // A documented member lives on its *parent* group's page — the path
         // minus its own leaf segment — at whatever depth that is.
         let parent = parent_group(&sym.path).to_string();
@@ -307,6 +384,12 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
             group.functions.push(function_doc(sym));
         } else if matches!(sym.kind, SymbolKind::Table) {
             group.tables.push(table_doc(sym));
+        } else if matches!(sym.kind, SymbolKind::Object) {
+            if is_can_message(sym) {
+                group.can_messages.push(can_message_doc(sym, table));
+            } else {
+                group.objects.push(object_doc(sym, table));
+            }
         }
     }
     // Wire each node into its parent's `children` list.
@@ -326,6 +409,8 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
         g.symbols.sort_by(|a, b| a.path.cmp(&b.path));
         g.functions.sort_by(|a, b| a.path.cmp(&b.path));
         g.tables.sort_by(|a, b| a.path.cmp(&b.path));
+        g.objects.sort_by(|a, b| a.path.cmp(&b.path));
+        g.can_messages.sort_by(|a, b| a.path.cmp(&b.path));
         g.children.sort();
         assign_anchors(g);
     }
@@ -390,6 +475,15 @@ fn assign_anchors(group: &mut GroupDoc) {
     }
     for t in &mut group.tables {
         t.anchor = unique(&t.path);
+    }
+    for o in &mut group.objects {
+        o.anchor = unique(&o.path);
+    }
+    for m in &mut group.can_messages {
+        m.anchor = unique(&m.path);
+        for s in &mut m.signals {
+            s.anchor = unique(&s.path);
+        }
     }
 }
 
@@ -848,6 +942,130 @@ mod tests {
             Some("float"),
             "expected float return type from `Out = 1.0;`; got {:?}",
             f.return_type
+        );
+    }
+
+    /// #28: a `MoTeC Input.Sensor` is a `SymbolKind::Object`; the loader must
+    /// document it with its class and the paths of its immediate members, on its
+    /// parent group page.
+    #[test]
+    fn object_documented_with_class_and_members() {
+        const OBJ: &str = r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Inputs"/>
+   <Component Classname="MoTeC Input.Sensor" Name="Root.Inputs.OilP"/>
+   <Component Classname="BuiltIn.Channel" Name="Root.Inputs.OilP.Resource"><Props Type="f32"/></Component>
+   <Component Classname="BuiltIn.Parameter" Name="Root.Inputs.OilP.Calibration"><Props Type="f32"/></Component>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#;
+        let model = build_model(&Project::from_xml(OBJ).unwrap(), "Demo".into());
+        let inputs = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Inputs")
+            .expect("Root.Inputs group");
+        let obj = inputs
+            .objects
+            .iter()
+            .find(|o| o.path == "Root.Inputs.OilP")
+            .expect("sensor object must be documented");
+        assert_eq!(obj.class.as_deref(), Some("MoTeC Input.Sensor"));
+        assert!(
+            obj.members
+                .contains(&"Root.Inputs.OilP.Resource".to_string())
+                && obj
+                    .members
+                    .contains(&"Root.Inputs.OilP.Calibration".to_string()),
+            "object must list its immediate members; got {:?}",
+            obj.members
+        );
+        assert!(!obj.anchor.is_empty(), "object participates in anchors");
+    }
+
+    /// #28: a `.m1dbc` contributes a CAN message object and signal channels. The
+    /// loader must surface the message's id/dlc and pack its signals (with bit
+    /// layout, scale, range, unit) under it — and NOT also list the signals as
+    /// plain channels.
+    #[test]
+    fn can_message_and_signals_documented_from_dbc() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        let dbc_path = dir.path().join("Bus.m1dbc");
+        fs::write(
+            &prj_path,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List/></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+        fs::write(
+            &dbc_path,
+            r#"<?xml version="1.0"?>
+<DBC>
+ <ComponentStream><List>
+   <Component Classname="BuiltIn.CAN.DBC" Name="Bus"/>
+   <Component Classname="BuiltIn.CAN.Message" Name="Bus.EngineData">
+    <Props CANId="160" DLC="8"/>
+   </Component>
+   <Component Classname="BuiltIn.CAN.Signal" Name="Bus.EngineData.EngineSpeed">
+    <Props Type="u16" Qty="rpm" StartBit="24" Length="16" Multiplier="0.5" Offset="0"/>
+   </Component>
+ </List></ComponentStream>
+</DBC>"#,
+        )
+        .unwrap();
+
+        let project = Project::from_xml(&fs::read_to_string(&prj_path).unwrap())
+            .unwrap()
+            .with_dbc(&dbc_path, "Bus.m1dbc")
+            .unwrap();
+        let model = build_model(&project, "Demo".into());
+
+        // The message lands on its parent group page (the DBC bus node).
+        let bus = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Bus")
+            .expect("Bus group");
+        let msg = bus
+            .can_messages
+            .iter()
+            .find(|m| m.path == "Bus.EngineData")
+            .expect("CAN message must be documented");
+        assert_eq!(msg.can_id, Some(160));
+        assert_eq!(msg.dlc, Some(8));
+        let sig = msg
+            .signals
+            .iter()
+            .find(|s| s.path == "Bus.EngineData.EngineSpeed")
+            .expect("signal must be packed under its message");
+        assert_eq!(sig.start_bit, Some(24));
+        assert_eq!(sig.length, Some(16));
+        assert_eq!(sig.multiplier, Some(0.5));
+        assert_eq!(sig.unit.as_deref(), Some("rpm"));
+        assert!(sig.range.is_some(), "u16 signal has a bounded range");
+
+        // The signal must NOT also appear as a plain channel anywhere, and no
+        // synthetic group is created at the message path.
+        assert!(
+            model.groups.iter().all(|g| g
+                .symbols
+                .iter()
+                .all(|s| s.path != "Bus.EngineData.EngineSpeed")),
+            "CAN signal must not double-list as a plain channel"
+        );
+        assert!(
+            model.groups.iter().all(|g| g.path != "Bus.EngineData"),
+            "no synthetic group should be created at the message path"
         );
     }
 
