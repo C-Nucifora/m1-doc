@@ -180,6 +180,7 @@ mod tests {
                     type_label: "f32".into(),
                     unit: Some("rpm".into()),
                     security: None,
+                    ..Default::default()
                 }],
                 functions: vec![],
             }],
