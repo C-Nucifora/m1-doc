@@ -61,15 +61,15 @@ fn format_both_writes_md_and_html() {
     );
 }
 
-// #35: `--format json` writes a single structured `doc.json` for the project,
+// #35: `--format json` writes a single structured `m1-doc.json` for the project,
 // with a versioned schema and a known symbol's metadata, and is deterministic.
 #[test]
-fn format_json_writes_deterministic_doc_json() {
+fn format_json_writes_deterministic_m1_doc_json() {
     let dir = tempfile::tempdir().unwrap();
     let prj = dir.path().join("Project.m1prj");
     std::fs::write(&prj, FIXTURE_XML).unwrap();
 
-    // Run `--format json` into a fresh out dir and return the `doc.json` body.
+    // Run `--format json` into a fresh out dir and return the `m1-doc.json` body.
     let run = |out: &std::path::Path| -> String {
         Command::cargo_bin("m1-doc")
             .unwrap()
@@ -83,17 +83,17 @@ fn format_json_writes_deterministic_doc_json() {
             ])
             .assert()
             .success();
-        std::fs::read_to_string(out.join("doc.json")).unwrap()
+        std::fs::read_to_string(out.join("m1-doc.json")).unwrap()
     };
 
     let first = run(&dir.path().join("a"));
 
     // Single JSON file written; no Markdown/HTML alongside it.
     let out_a = dir.path().join("a");
-    assert!(out_a.join("doc.json").exists(), "doc.json missing");
+    assert!(out_a.join("m1-doc.json").exists(), "m1-doc.json missing");
     assert!(
         !out_a.join("index.md").exists() && !out_a.join("index.html").exists(),
-        "--format json must write only doc.json"
+        "--format json must write only m1-doc.json"
     );
 
     // Versioned schema + the known channel and its display unit are present.
