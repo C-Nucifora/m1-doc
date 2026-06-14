@@ -27,12 +27,26 @@ fn format_annotation(ann: &AnnotationDoc) -> String {
     }
 }
 
-/// Render one function entry as a `### <path>` subsection with its input list,
-/// optional return type, and, when present, an `**Annotations:**` block listing
-/// each `@m1:` annotation.
+/// Format a rate in Hz for a table cell or field: `200 Hz`, `0.5 Hz`, or `—`
+/// when absent. Trailing zeros are trimmed so integral rates read cleanly.
+pub(crate) fn format_rate(hz: Option<f64>) -> String {
+    match hz {
+        None => "—".to_string(),
+        Some(r) => {
+            let s = format!("{r:.3}");
+            let s = s.trim_end_matches('0').trim_end_matches('.');
+            format!("{s} Hz")
+        }
+    }
+}
+
+/// Render one function entry as a `### <path>` subsection with its call rate,
+/// input list, optional return type, and, when present, an `**Annotations:**`
+/// block listing each `@m1:` annotation.
 fn render_function(f: &FunctionDoc) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "### {}\n", f.path);
+    let _ = writeln!(out, "**Call rate:** {}\n", format_rate(f.call_rate_hz));
     if f.inputs.is_empty() {
         let _ = writeln!(out, "(no inputs)\n");
     } else {
@@ -67,15 +81,27 @@ fn render_group(group: &GroupDoc) -> String {
             continue;
         }
         let _ = writeln!(out, "## {}\n", kind.plural());
-        let _ = writeln!(out, "| Name | Type | Unit | Security |");
-        let _ = writeln!(out, "| --- | --- | --- | --- |");
+        let _ = writeln!(
+            out,
+            "| Name | Type | Quantity | Unit | Base | Log rate | Security |"
+        );
+        let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- | --- |");
         for s in rows {
+            // Show the base unit only when it differs from the display unit —
+            // collapse the redundant case (and when either is absent).
+            let base = match (s.unit.as_deref(), s.base_unit.as_deref()) {
+                (Some(disp), Some(base)) if disp != base => base,
+                _ => "—",
+            };
             let _ = writeln!(
                 out,
-                "| `{}` | {} | {} | {} |",
+                "| `{}` | {} | {} | {} | {} | {} | {} |",
                 s.path,
                 s.type_label,
+                s.quantity.as_deref().unwrap_or("—"),
                 s.unit.as_deref().unwrap_or("—"),
+                base,
+                format_rate(s.log_rate_hz),
                 s.security.as_deref().unwrap_or("—"),
             );
         }
@@ -132,6 +158,7 @@ mod tests {
                     type_label: "f32".into(),
                     unit: Some("rpm".into()),
                     security: None,
+                    ..Default::default()
                 }],
                 functions: vec![],
             }],
@@ -150,6 +177,7 @@ mod tests {
                         inputs: vec![],
                         return_type: None,
                         annotations: vec![],
+                        ..Default::default()
                     },
                     FunctionDoc {
                         path: "Root.Engine.Update".into(),
@@ -159,6 +187,7 @@ mod tests {
                         ],
                         return_type: None,
                         annotations: vec![],
+                        ..Default::default()
                     },
                 ],
             }],
@@ -184,7 +213,7 @@ mod tests {
         assert!(page.body.contains("## Channels"), "got:\n{}", page.body);
         assert!(
             page.body
-                .contains("| `Root.Engine.Speed` | f32 | rpm | — |"),
+                .contains("| `Root.Engine.Speed` | f32 | — | rpm | — | — | — |"),
             "got:\n{}",
             page.body
         );
@@ -201,6 +230,7 @@ mod tests {
                     type_label: "u16".into(),
                     unit: None,
                     security: None,
+                    ..Default::default()
                 }],
                 functions: vec![],
             }],
@@ -309,6 +339,7 @@ mod tests {
                             args: vec!["L010".into()],
                         },
                     ],
+                    ..Default::default()
                 }],
             }],
         };
@@ -354,6 +385,7 @@ mod tests {
                     inputs: vec![("X".to_string(), "float".to_string())],
                     return_type: Some("float".to_string()),
                     annotations: vec![],
+                    ..Default::default()
                 }],
             }],
         };
@@ -373,6 +405,108 @@ mod tests {
         assert!(
             !page.body.contains("**Returns:**"),
             "must not emit Returns when return_type is None; got:\n{}",
+            page.body
+        );
+    }
+
+    // ---- #25: rate / quantity / base-vs-display-unit surfacing ----
+
+    #[test]
+    fn format_rate_trims_trailing_zeros_and_handles_none() {
+        assert_eq!(format_rate(Some(200.0)), "200 Hz");
+        assert_eq!(format_rate(Some(0.5)), "0.5 Hz");
+        assert_eq!(format_rate(Some(12.25)), "12.25 Hz");
+        assert_eq!(format_rate(None), "—");
+    }
+
+    #[test]
+    fn group_table_shows_quantity_log_rate_and_base_only_when_it_differs() {
+        // Display unit (rpm) differs from the stored base (rad/s) → both shown;
+        // the channel carries a quantity and a log rate.
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![
+                    SymbolDoc {
+                        path: "Root.Engine.Speed".into(),
+                        kind: SymbolDocKind::Channel,
+                        type_label: "f32".into(),
+                        quantity: Some("rad/s".into()),
+                        unit: Some("rpm".into()),
+                        base_unit: Some("rad/s".into()),
+                        log_rate_hz: Some(200.0),
+                        security: None,
+                    },
+                    // Display == base → Base column collapses to "—".
+                    SymbolDoc {
+                        path: "Root.Engine.Load".into(),
+                        kind: SymbolDocKind::Channel,
+                        type_label: "f32".into(),
+                        quantity: None,
+                        unit: Some("%".into()),
+                        base_unit: Some("%".into()),
+                        log_rate_hz: None,
+                        security: None,
+                    },
+                ],
+                functions: vec![],
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body
+                .contains("| `Root.Engine.Speed` | f32 | rad/s | rpm | rad/s | 200 Hz | — |"),
+            "rate/quantity/base not surfaced; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains("| `Root.Engine.Load` | f32 | — | % | — | — | — |"),
+            "base must collapse when identical to display; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains("| Name | Type | Quantity | Unit | Base | Log rate | Security |"),
+            "table header missing new columns; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn function_renders_call_rate_and_dash_when_absent() {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![],
+                functions: vec![
+                    FunctionDoc {
+                        path: "Root.Engine.Update".into(),
+                        call_rate_hz: Some(100.0),
+                        ..Default::default()
+                    },
+                    FunctionDoc {
+                        path: "Root.Engine.Init".into(),
+                        call_rate_hz: None,
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body.contains("### Root.Engine.Update")
+                && page.body.contains("**Call rate:** 100 Hz"),
+            "triggered function must show its call rate; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("**Call rate:** —"),
+            "untriggered function must show — ; got:\n{}",
             page.body
         );
     }

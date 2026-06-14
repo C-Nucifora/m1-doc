@@ -48,6 +48,7 @@ fn function_doc(sym: &Symbol) -> FunctionDoc {
         inputs,
         return_type,
         annotations: Vec::new(),
+        call_rate_hz: sym.call_rate_hz,
     }
 }
 
@@ -88,7 +89,10 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
         path: sym.path.clone(),
         kind,
         type_label: type_label(sym),
+        quantity: sym.qty.clone(),
         unit,
+        base_unit: sym.unit.clone(),
+        log_rate_hz: sym.log_rate_hz,
         security: sym.security.clone(),
     }
 }

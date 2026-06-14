@@ -28,10 +28,14 @@ pub struct FunctionDoc {
     pub inputs: Vec<(String, String)>,
     pub return_type: Option<String>,
     pub annotations: Vec<AnnotationDoc>,
+    /// Execution rate in Hz, derived from the script's `SelectedTrigger`
+    /// (e.g. a `100 Hz` event). `None` when the function has no rate-bearing
+    /// trigger (`On Startup`, untriggered) — rendered as `—`, never faked.
+    pub call_rate_hz: Option<f64>,
 }
 
 /// One documented symbol (channel / parameter / constant).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SymbolDoc {
     pub path: String,
     pub kind: SymbolDocKind,
@@ -39,12 +43,24 @@ pub struct SymbolDoc {
     /// resolved value type's display string. Always present — every symbol has at
     /// least a resolved `ValueType`.
     pub type_label: String,
+    /// The physical quantity / dimension key (e.g. `rad/s`, `Pa`, `K`), from the
+    /// component's `Qty`. `None` when the symbol declares no quantity.
+    pub quantity: Option<String>,
+    /// The human-visible **display** unit (e.g. `rpm`, `kPa`) from
+    /// `<Locale><Default Unit="…">` — what MoTeC Build and the dash show.
     pub unit: Option<String>,
+    /// The stored **base** unit derived from `Qty` (e.g. `rad/s`). Shown
+    /// alongside [`Self::unit`] only when the two differ (calibration vs logging
+    /// see different units); collapsed when identical or absent.
+    pub base_unit: Option<String>,
+    /// Default logging rate in Hz (`DefaultLogRate`). `None` when unset.
+    pub log_rate_hz: Option<f64>,
     pub security: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SymbolDocKind {
+    #[default]
     Channel,
     Parameter,
     Constant,
