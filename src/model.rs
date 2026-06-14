@@ -91,6 +91,22 @@ pub struct SymbolDoc {
     /// Default logging rate in Hz (`DefaultLogRate`). `None` when unset.
     pub log_rate_hz: Option<f64>,
     pub security: Option<String>,
+    /// When this symbol is enum-typed, the name of its [`EnumDoc`] so the type
+    /// cell can link to the Enums reference. `None` for non-enum symbols.
+    pub enum_ref: Option<String>,
+}
+
+/// One documented enum type used in the project: its name, enumerators (member
+/// names in container order), default value, and whether it is `open`
+/// (firmware-supplied — the listed members may not be exhaustive).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct EnumDoc {
+    pub name: String,
+    /// Stable, page-unique anchor id within the Enums reference page.
+    pub anchor: String,
+    pub members: Vec<String>,
+    pub default: Option<String>,
+    pub open: bool,
 }
 
 /// One input axis of a calibration table: its breakpoint count and (when the
@@ -149,11 +165,14 @@ pub struct GroupDoc {
     pub children: Vec<String>,
 }
 
-/// The whole project's documentation, groups sorted by path.
+/// The whole project's documentation: the group tree plus the project-wide
+/// Enums reference (sorted by name, deduped).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DocModel {
     pub title: String,
     pub groups: Vec<GroupDoc>,
+    /// Every enum type used in the project, by name, sorted and deduped.
+    pub enums: Vec<EnumDoc>,
 }
 
 #[cfg(test)]
