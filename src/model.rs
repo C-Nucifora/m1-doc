@@ -94,6 +94,56 @@ pub struct SymbolDoc {
     /// When this symbol is enum-typed, the name of its [`EnumDoc`] so the type
     /// cell can link to the Enums reference. `None` for non-enum symbols.
     pub enum_ref: Option<String>,
+    /// The component's raw package `Classname` (e.g. `BuiltIn.Channel`,
+    /// `MoTeC Input.Sensor`, `BuiltIn.CAN.Signal`). Surfaced (#28) so readers can
+    /// tell a plain channel from a generated IO method or a sensor input. `None`
+    /// for symbols not sourced from a project/DBC `<Component>`.
+    pub classname: Option<String>,
+}
+
+/// One package-class object component — a `SymbolKind::Object`, e.g. a
+/// `MoTeC Input.Sensor` or a CAN DBC root. Carries its class and the paths of
+/// its immediate members so the reader sees what the object contains (#28).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ObjectDoc {
+    pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]).
+    pub anchor: String,
+    /// The component's package class (e.g. `MoTeC Input.Sensor`), when known.
+    pub class: Option<String>,
+    /// Full paths of the object's immediate members, sorted. Empty for a leaf.
+    pub members: Vec<String>,
+}
+
+/// One CAN signal within a message frame (a `BuiltIn.CAN.Signal` channel): its
+/// bit layout, linear scaling, physical range, and engineering unit, all from
+/// the `.m1dbc`. Every field is optional and rendered as `—` when absent (#28).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CanSignalDoc {
+    pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]).
+    pub anchor: String,
+    pub start_bit: Option<u32>,
+    pub length: Option<u32>,
+    /// Scale factor (`physical = raw * multiplier + offset`).
+    pub multiplier: Option<f64>,
+    pub offset: Option<f64>,
+    /// Physical `(min, max)` range, when the signal is integer-typed.
+    pub range: Option<(f64, f64)>,
+    pub unit: Option<String>,
+}
+
+/// One CAN message frame: a `BuiltIn.CAN.Message` object with its `can_id`/`dlc`
+/// and the signals packed into it, grouped under the message (#28).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CanMessageDoc {
+    pub path: String,
+    /// Stable, page-unique anchor id (see [`anchor_slug`]).
+    pub anchor: String,
+    pub can_id: Option<u32>,
+    pub dlc: Option<u32>,
+    /// Signals in this frame, in bit order (`start_bit`, then path).
+    pub signals: Vec<CanSignalDoc>,
 }
 
 /// One documented enum type used in the project: its name, enumerators (member
@@ -161,6 +211,11 @@ pub struct GroupDoc {
     pub functions: Vec<FunctionDoc>,
     /// Calibration tables declared directly in this group, sorted by path.
     pub tables: Vec<TableDoc>,
+    /// Package-class objects (sensors, class instances, CAN DBC roots) declared
+    /// directly in this group, sorted by path (#28).
+    pub objects: Vec<ObjectDoc>,
+    /// CAN message frames declared directly in this group, sorted by path (#28).
+    pub can_messages: Vec<CanMessageDoc>,
     /// Full paths of the immediate child groups, sorted. Empty for a leaf group.
     pub children: Vec<String>,
 }

@@ -223,6 +223,8 @@ mod tests {
                 }],
                 functions: vec![],
                 tables: vec![],
+                objects: vec![],
+                can_messages: vec![],
                 children: vec![],
             }],
         }
