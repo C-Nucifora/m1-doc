@@ -1,3 +1,4 @@
+mod graph;
 mod html;
 mod json;
 mod loader;

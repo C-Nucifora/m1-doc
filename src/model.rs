@@ -257,8 +257,51 @@ pub struct GroupDoc {
     pub children: Vec<String>,
 }
 
+/// The kind of a [`GraphEdge`] in the project relationship graph (#37). `Call`
+/// is a function/method invoking another; `Read`/`Write` are a function reading
+/// or writing a channel/parameter/constant; `Reference` is a `BuiltIn.Reference`
+/// alias pointing at its target (from #29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EdgeKind {
+    Call,
+    Read,
+    Write,
+    Reference,
+}
+
+impl EdgeKind {
+    /// Stable lowercase name used in JSON and diagram labels.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EdgeKind::Call => "call",
+            EdgeKind::Read => "read",
+            EdgeKind::Write => "write",
+            EdgeKind::Reference => "reference",
+        }
+    }
+}
+
+/// One typed edge in the relationship graph: `from` and `to` are canonical
+/// symbol paths (a function, channel, parameter, constant, or reference), and
+/// `kind` says how they relate. Only edges whose endpoints resolve to documented
+/// symbols are recorded — dynamic/unresolved targets are dropped (#37).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: EdgeKind,
+}
+
+/// The project relationship graph (#37): every call/read/write/reference edge,
+/// sorted and deduped so the output is deterministic. Nodes are the symbol paths
+/// already documented in the model — the graph carries only the edges.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ProjectGraph {
+    pub edges: Vec<GraphEdge>,
+}
+
 /// The whole project's documentation: the group tree plus the project-wide
-/// Enums reference (sorted by name, deduped).
+/// Enums reference (sorted by name, deduped) and the relationship graph (#37).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DocModel {
     pub title: String,
@@ -270,6 +313,8 @@ pub struct DocModel {
     pub groups: Vec<GroupDoc>,
     /// Every enum type used in the project, by name, sorted and deduped.
     pub enums: Vec<EnumDoc>,
+    /// The relationship graph: call/read/write/reference edges (#37).
+    pub graph: ProjectGraph,
 }
 
 /// Project-wide counts by kind, plus structural metrics, for the overview
@@ -600,6 +645,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 

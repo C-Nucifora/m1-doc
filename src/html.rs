@@ -781,6 +781,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -961,6 +962,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 

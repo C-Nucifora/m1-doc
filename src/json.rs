@@ -12,8 +12,8 @@
 //! by the loader). Missing data is `null`, never invented (degrade, never fake).
 
 use crate::model::{
-    AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc,
-    ObjectDoc, ReferenceDoc, SymbolDoc, SymbolDocKind, TableDoc,
+    AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GraphEdge,
+    GroupDoc, ObjectDoc, ReferenceDoc, SymbolDoc, SymbolDocKind, TableDoc,
 };
 use std::fmt::Write as _;
 
@@ -31,8 +31,23 @@ pub fn render(model: &DocModel) -> String {
         w.field_opt_str("target_hardware", model.target_hardware.as_deref());
         w.field("groups", |w| w.array(&model.groups, write_group));
         w.field("enums", |w| w.array(&model.enums, write_enum));
+        // The relationship graph (#37): nodes are the symbol paths above; this
+        // carries the typed edges between them.
+        w.field("graph", |w| {
+            w.object(|w| {
+                w.field("edges", |w| w.array(&model.graph.edges, write_edge));
+            });
+        });
     });
     w.finish()
+}
+
+fn write_edge(w: &mut Writer, e: &GraphEdge) {
+    w.object(|w| {
+        w.field_str("from", &e.from);
+        w.field_str("to", &e.to);
+        w.field_str("kind", e.kind.as_str());
+    });
 }
 
 /// The documented kind of a symbol, as a stable lowercase string.
@@ -438,6 +453,7 @@ mod tests {
                 default: Some("Off".into()),
                 open: false,
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -508,6 +524,7 @@ mod tests {
                 ..Default::default()
             }],
             enums: vec![],
+            graph: crate::model::ProjectGraph::default(),
         };
         let json = render(&model);
         assert!(json.contains("\"quantity\": null"), "got:\n{json}");
@@ -561,6 +578,7 @@ mod tests {
                 ..Default::default()
             }],
             enums: vec![],
+            graph: crate::model::ProjectGraph::default(),
         };
         let json = render(&model);
         assert!(json.contains("\"log_rate_hz\": null"), "got:\n{json}");
@@ -606,6 +624,45 @@ mod tests {
             json.contains("\"target_raw\": \"Off.Model\"")
                 && json.contains("\"target_resolved\": null"),
             "unresolved target must be raw + null; got:\n{json}"
+        );
+    }
+
+    #[test]
+    fn graph_edges_serialize_with_typed_kinds() {
+        use crate::model::{EdgeKind, GraphEdge, ProjectGraph};
+        let model = DocModel {
+            title: "T".into(),
+            graph: ProjectGraph {
+                edges: vec![
+                    GraphEdge {
+                        from: "Root.A.Update".into(),
+                        to: "Root.A.Helper".into(),
+                        kind: EdgeKind::Call,
+                    },
+                    GraphEdge {
+                        from: "Root.A.Update".into(),
+                        to: "Root.A.Speed".into(),
+                        kind: EdgeKind::Read,
+                    },
+                ],
+            },
+            ..Default::default()
+        };
+        let json = render(&model);
+        assert!(json.contains("\"graph\""), "got:\n{json}");
+        assert!(json.contains("\"edges\""), "got:\n{json}");
+        assert!(
+            json.contains("\"from\": \"Root.A.Update\"")
+                && json.contains("\"to\": \"Root.A.Helper\"")
+                && json.contains("\"kind\": \"call\""),
+            "call edge must serialize; got:\n{json}"
+        );
+        assert!(json.contains("\"kind\": \"read\""), "got:\n{json}");
+        // An empty model still emits an empty edges array (never omitted).
+        let empty = render(&DocModel::default());
+        assert!(
+            empty.contains("\"graph\"") && empty.contains("\"edges\": []"),
+            "empty graph must still emit edges:[]; got:\n{empty}"
         );
     }
 }

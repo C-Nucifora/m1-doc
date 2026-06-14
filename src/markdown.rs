@@ -804,6 +804,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -840,6 +841,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -895,6 +897,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -1043,6 +1046,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         }
     }
 
@@ -1158,6 +1162,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1211,6 +1216,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1284,6 +1290,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1320,6 +1327,7 @@ mod tests {
                 default: Some("Off".into()),
                 open: false,
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files
@@ -1360,6 +1368,7 @@ mod tests {
                 default: None,
                 open: true,
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "enums.md").unwrap();
@@ -1395,6 +1404,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1430,6 +1440,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1468,6 +1479,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1491,6 +1503,7 @@ mod tests {
                 children: vec!["Root.Engine.Fuel.Pump".into()],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files
@@ -1531,6 +1544,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let index = &files[0];
@@ -1573,6 +1587,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1620,6 +1635,7 @@ mod tests {
                 references: vec![],
                 children: vec![],
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1658,6 +1674,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
@@ -1707,6 +1724,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
@@ -1749,6 +1767,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Bus.md").unwrap();
@@ -1787,6 +1806,7 @@ mod tests {
                 ],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Inputs.md").unwrap();
@@ -1896,6 +1916,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
@@ -1947,6 +1968,7 @@ mod tests {
                 ],
                 ..Default::default()
             }],
+            graph: crate::model::ProjectGraph::default(),
         };
         let files = render(&model);
         let page = files
