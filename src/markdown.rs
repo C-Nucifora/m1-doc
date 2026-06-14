@@ -45,6 +45,9 @@ pub(crate) fn format_rate(hz: Option<f64>) -> String {
 /// block listing each `@m1:` annotation.
 fn render_function(f: &FunctionDoc) -> String {
     let mut out = String::new();
+    // Explicit, deterministic anchor (our scheme — not pulldown-cmark's
+    // incidental heading slug) so `<group>.md#<anchor>` is stable.
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", f.anchor);
     let _ = writeln!(out, "### {}\n", f.path);
     let _ = writeln!(out, "**Call rate:** {}\n", format_rate(f.call_rate_hz));
     if f.inputs.is_empty() {
@@ -93,9 +96,12 @@ fn render_group(group: &GroupDoc) -> String {
                 (Some(disp), Some(base)) if disp != base => base,
                 _ => "—",
             };
+            // Leading inline anchor in the Name cell makes the row linkable as
+            // `<group>.md#<anchor>`; it carries into the HTML table verbatim.
             let _ = writeln!(
                 out,
-                "| `{}` | {} | {} | {} | {} | {} | {} |",
+                "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} | {} | {} |",
+                s.anchor,
                 s.path,
                 s.type_label,
                 s.quantity.as_deref().unwrap_or("—"),
@@ -213,7 +219,7 @@ mod tests {
         assert!(page.body.contains("## Channels"), "got:\n{}", page.body);
         assert!(
             page.body
-                .contains("| `Root.Engine.Speed` | f32 | — | rpm | — | — | — |"),
+                .contains("`Root.Engine.Speed` | f32 | — | rpm | — | — | — |"),
             "got:\n{}",
             page.body
         );
@@ -251,7 +257,7 @@ mod tests {
             page.body
         );
         assert!(
-            page.body.contains("| `Root.Engine.MaxRpm` | u16 | — | — |"),
+            page.body.contains("`Root.Engine.MaxRpm` | u16 | — | — |"),
             "expected constant row; got:\n{}",
             page.body
         );
@@ -437,6 +443,7 @@ mod tests {
                         base_unit: Some("rad/s".into()),
                         log_rate_hz: Some(200.0),
                         security: None,
+                        ..Default::default()
                     },
                     // Display == base → Base column collapses to "—".
                     SymbolDoc {
@@ -448,6 +455,7 @@ mod tests {
                         base_unit: Some("%".into()),
                         log_rate_hz: None,
                         security: None,
+                        ..Default::default()
                     },
                 ],
                 functions: vec![],
@@ -457,13 +465,13 @@ mod tests {
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
         assert!(
             page.body
-                .contains("| `Root.Engine.Speed` | f32 | rad/s | rpm | rad/s | 200 Hz | — |"),
+                .contains("`Root.Engine.Speed` | f32 | rad/s | rpm | rad/s | 200 Hz | — |"),
             "rate/quantity/base not surfaced; got:\n{}",
             page.body
         );
         assert!(
             page.body
-                .contains("| `Root.Engine.Load` | f32 | — | % | — | — | — |"),
+                .contains("`Root.Engine.Load` | f32 | — | % | — | — | — |"),
             "base must collapse when identical to display; got:\n{}",
             page.body
         );
@@ -471,6 +479,43 @@ mod tests {
             page.body
                 .contains("| Name | Type | Quantity | Unit | Base | Log rate | Security |"),
             "table header missing new columns; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn rows_and_functions_emit_their_stable_anchor(/* #24 */) {
+        let model = DocModel {
+            title: "Demo".into(),
+            groups: vec![GroupDoc {
+                path: "Root.Engine".into(),
+                symbols: vec![SymbolDoc {
+                    path: "Root.Engine.Speed".into(),
+                    anchor: "root-engine-speed".into(),
+                    kind: SymbolDocKind::Channel,
+                    type_label: "f32".into(),
+                    ..Default::default()
+                }],
+                functions: vec![FunctionDoc {
+                    path: "Root.Engine.Update".into(),
+                    anchor: "root-engine-update".into(),
+                    ..Default::default()
+                }],
+            }],
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        // Symbol row carries a leading inline anchor → `Root.Engine.md#root-engine-speed`.
+        assert!(
+            page.body
+                .contains("| <a id=\"root-engine-speed\"></a>`Root.Engine.Speed`"),
+            "symbol row missing its anchor; got:\n{}",
+            page.body
+        );
+        // Function uses our explicit anchor, not pulldown-cmark's heading slug.
+        assert!(
+            page.body.contains("<a id=\"root-engine-update\"></a>"),
+            "function missing its anchor; got:\n{}",
             page.body
         );
     }

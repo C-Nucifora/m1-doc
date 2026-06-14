@@ -2,7 +2,9 @@
 //! parameters, and constants are grouped by their top-level group
 //! (`Root.Engine` for `Root.Engine.Speed`).
 
-use crate::model::{AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind};
+use crate::model::{
+    AnnotationDoc, DocModel, FunctionDoc, GroupDoc, SymbolDoc, SymbolDocKind, anchor_slug,
+};
 use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind};
 use std::collections::BTreeMap;
@@ -45,6 +47,8 @@ fn function_doc(sym: &Symbol) -> FunctionDoc {
     let return_type = sym.return_type.map(|vt| value_type_label(vt).to_string());
     FunctionDoc {
         path: sym.path.clone(),
+        // Base slug; `assign_anchors` resolves any page collisions.
+        anchor: anchor_slug(&sym.path),
         inputs,
         return_type,
         annotations: Vec::new(),
@@ -87,6 +91,8 @@ fn symbol_doc(sym: &Symbol, kind: SymbolDocKind) -> SymbolDoc {
     let unit = sym.display_unit.clone().or_else(|| sym.unit.clone());
     SymbolDoc {
         path: sym.path.clone(),
+        // Base slug; `assign_anchors` resolves any page collisions.
+        anchor: anchor_slug(&sym.path),
         kind,
         type_label: type_label(sym),
         quantity: sym.qty.clone(),
@@ -258,8 +264,29 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
     for g in &mut groups {
         g.symbols.sort_by(|a, b| a.path.cmp(&b.path));
         g.functions.sort_by(|a, b| a.path.cmp(&b.path));
+        assign_anchors(g);
     }
     DocModel { title, groups }
+}
+
+/// Assign each symbol and function on a group page a page-unique anchor id.
+/// Symbols and functions share one namespace (they coexist on the same HTML
+/// page, where an `id` must be unique). Base slugs come from the shared
+/// [`anchor_slug`]; a rare collision gets a deterministic `-2`, `-3`, … suffix.
+fn assign_anchors(group: &mut GroupDoc) {
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut unique = |path: &str| -> String {
+        let base = anchor_slug(path);
+        let n = counts.entry(base.clone()).or_insert(0);
+        *n += 1;
+        if *n == 1 { base } else { format!("{base}-{n}") }
+    };
+    for s in &mut group.symbols {
+        s.anchor = unique(&s.path);
+    }
+    for f in &mut group.functions {
+        f.anchor = unique(&f.path);
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +317,58 @@ mod tests {
     #[test]
     fn top_level_group_deep_path() {
         assert_eq!(top_level_group("Root.Engine.Gain.Value"), "Root.Engine");
+    }
+
+    #[test]
+    fn assign_anchors_dedupes_collisions_within_a_page() {
+        // Three paths that all sanitise to `root-engine-oil-temp`. Symbols and
+        // functions share one page namespace, so all three must stay distinct.
+        let mut group = GroupDoc {
+            path: "Root.Engine".into(),
+            symbols: vec![
+                SymbolDoc {
+                    path: "Root.Engine.Oil Temp".into(),
+                    ..Default::default()
+                },
+                SymbolDoc {
+                    path: "Root.Engine.Oil-Temp".into(),
+                    ..Default::default()
+                },
+            ],
+            functions: vec![FunctionDoc {
+                path: "Root.Engine.Oil.Temp".into(),
+                ..Default::default()
+            }],
+        };
+        assign_anchors(&mut group);
+        assert_eq!(group.symbols[0].anchor, "root-engine-oil-temp");
+        assert_eq!(group.symbols[1].anchor, "root-engine-oil-temp-2");
+        assert_eq!(group.functions[0].anchor, "root-engine-oil-temp-3");
+
+        let mut all = [
+            group.symbols[0].anchor.clone(),
+            group.symbols[1].anchor.clone(),
+            group.functions[0].anchor.clone(),
+        ];
+        all.sort();
+        let unique = all.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert_eq!(unique, 3, "anchors must be unique within a page");
+    }
+
+    #[test]
+    fn build_model_assigns_a_stable_anchor_to_each_symbol() {
+        let model = build_model(&Project::from_xml(PROJECT).unwrap(), "Demo".into());
+        let eng = model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .unwrap();
+        let speed = eng
+            .symbols
+            .iter()
+            .find(|s| s.path == "Root.Engine.Speed")
+            .unwrap();
+        assert_eq!(speed.anchor, "root-engine-speed");
     }
 
     // A FuncUser with a <Signature><Params> produces in_params on the symbol;
