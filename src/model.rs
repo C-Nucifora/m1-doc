@@ -82,6 +82,11 @@ pub struct SymbolDoc {
     /// loader so both renderers point at the same target.
     pub anchor: String,
     pub kind: SymbolDocKind,
+    /// Tags inherited from the symbol and every ancestor group (#34), in the
+    /// order m1-typecheck unions them (own tags first, then inherited). Empty
+    /// when neither the symbol nor an ancestor declares a tag. Surfaced so a
+    /// tag-organised project gets tag-based browsing and filtering.
+    pub tags: Vec<String>,
     /// The storage type to show: `declared_type` verbatim when present, else the
     /// resolved value type's display string. Always present — every symbol has at
     /// least a resolved `ValueType`.
@@ -233,9 +238,191 @@ pub struct GroupDoc {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DocModel {
     pub title: String,
+    /// Target hardware (`<Project TargetHardware="…">`), when known. The
+    /// m1-typecheck `Project` API does not currently expose it, so the loader
+    /// leaves this `None` and the landing page degrades to a note rather than
+    /// inventing a value (#32). Tracked upstream — see the loader's `load` doc.
+    pub target_hardware: Option<String>,
     pub groups: Vec<GroupDoc>,
     /// Every enum type used in the project, by name, sorted and deduped.
     pub enums: Vec<EnumDoc>,
+}
+
+/// Project-wide counts by kind, plus structural metrics, for the overview
+/// landing page (#32). Every field is computed from the model — never
+/// hardcoded — so the numbers stay in lock-step with the rendered pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProjectStats {
+    pub channels: usize,
+    pub parameters: usize,
+    pub constants: usize,
+    pub functions: usize,
+    pub tables: usize,
+    pub objects: usize,
+    pub can_messages: usize,
+    pub can_signals: usize,
+    pub enums: usize,
+    /// Total documented group nodes (every node in the tree).
+    pub groups: usize,
+    /// Number of forest-root groups (top-level entries on the landing page).
+    pub top_level_groups: usize,
+    /// Deepest group path measured in dot-segments (`Root.A.B` → 3). Zero when
+    /// the project has no groups.
+    pub max_depth: usize,
+}
+
+impl ProjectStats {
+    /// Total documented components across every kind — the headline number on
+    /// the landing page.
+    pub fn total_components(self) -> usize {
+        self.channels
+            + self.parameters
+            + self.constants
+            + self.functions
+            + self.tables
+            + self.objects
+            + self.can_messages
+            + self.can_signals
+    }
+}
+
+/// One forest-root group on the landing tree, paired with component counts. The
+/// leaf segment is the display label; the full path keys its page (#32).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeNode {
+    pub path: String,
+    /// Documented components declared **directly** on this node (not its
+    /// descendants) — channels, parameters, constants, functions, tables,
+    /// objects and CAN messages.
+    pub direct_count: usize,
+    /// Documented components across this node and its whole subtree — the
+    /// figure shown beside a top-level group so its size reads at a glance
+    /// (the issue's illustrative `Root.Engine (412)`).
+    pub subtree_count: usize,
+    /// Whether this node has any child groups (so the renderer can mark it as
+    /// expandable without re-walking the tree).
+    pub has_children: bool,
+}
+
+impl DocModel {
+    /// Components declared directly on a group (the figure shown beside it in
+    /// the landing tree and the nav).
+    fn direct_count(g: &GroupDoc) -> usize {
+        g.symbols.len()
+            + g.functions.len()
+            + g.tables.len()
+            + g.objects.len()
+            + g.can_messages.len()
+    }
+
+    /// Compute the project stats from the model. Counts every documented
+    /// component, the group structure, and the enum reference. Deterministic:
+    /// it only reads already-sorted model data (#32).
+    pub fn stats(&self) -> ProjectStats {
+        let mut s = ProjectStats {
+            enums: self.enums.len(),
+            groups: self.groups.len(),
+            ..ProjectStats::default()
+        };
+        let present: std::collections::HashSet<&str> =
+            self.groups.iter().map(|g| g.path.as_str()).collect();
+        for g in &self.groups {
+            for sym in &g.symbols {
+                match sym.kind {
+                    SymbolDocKind::Channel => s.channels += 1,
+                    SymbolDocKind::Parameter => s.parameters += 1,
+                    SymbolDocKind::Constant => s.constants += 1,
+                }
+            }
+            s.functions += g.functions.len();
+            s.tables += g.tables.len();
+            s.objects += g.objects.len();
+            s.can_messages += g.can_messages.len();
+            s.can_signals += g
+                .can_messages
+                .iter()
+                .map(|m| m.signals.len())
+                .sum::<usize>();
+            // A forest root is a node whose parent is not itself a documented
+            // group — the same definition the index and nav use.
+            let depth = g.path.split('.').count();
+            s.max_depth = s.max_depth.max(depth);
+            let parent = match g.path.rfind('.') {
+                Some(i) => &g.path[..i],
+                None => "",
+            };
+            if parent.is_empty() || !present.contains(parent) {
+                s.top_level_groups += 1;
+            }
+        }
+        s
+    }
+
+    /// The forest-root groups for the landing tree, in model (sorted) order,
+    /// each with its direct and subtree component counts and whether it has
+    /// children (#32).
+    pub fn top_level_tree(&self) -> Vec<TreeNode> {
+        let by_path: std::collections::BTreeMap<&str, &GroupDoc> =
+            self.groups.iter().map(|g| (g.path.as_str(), g)).collect();
+        self.groups
+            .iter()
+            .filter(|g| {
+                let parent = match g.path.rfind('.') {
+                    Some(i) => &g.path[..i],
+                    None => "",
+                };
+                parent.is_empty() || !by_path.contains_key(parent)
+            })
+            .map(|g| TreeNode {
+                path: g.path.clone(),
+                direct_count: Self::direct_count(g),
+                subtree_count: Self::subtree_count(g, &by_path),
+                has_children: !g.children.is_empty(),
+            })
+            .collect()
+    }
+
+    /// Sum of [`Self::direct_count`] over a node and every descendant group,
+    /// following the `children` links (the tree is acyclic, so this terminates).
+    fn subtree_count(g: &GroupDoc, by_path: &std::collections::BTreeMap<&str, &GroupDoc>) -> usize {
+        let mut total = Self::direct_count(g);
+        for child in &g.children {
+            if let Some(cg) = by_path.get(child.as_str()) {
+                total += Self::subtree_count(cg, by_path);
+            }
+        }
+        total
+    }
+
+    /// Every distinct security level the project declares, sorted, deduped.
+    /// Drives the legend and the security filter (#34). Empty when no symbol
+    /// declares a security level.
+    pub fn security_levels(&self) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for g in &self.groups {
+            for sym in &g.symbols {
+                if let Some(sec) = &sym.security {
+                    set.insert(sec.as_str());
+                }
+            }
+        }
+        set.into_iter().map(str::to_string).collect()
+    }
+
+    /// Every distinct tag any symbol carries, sorted, deduped. Drives the tag
+    /// facet/index and the tag filter (#34). Empty when the project is
+    /// untagged.
+    pub fn tags(&self) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for g in &self.groups {
+            for sym in &g.symbols {
+                for tag in &sym.tags {
+                    set.insert(tag.as_str());
+                }
+            }
+        }
+        set.into_iter().map(str::to_string).collect()
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +468,100 @@ mod tests {
         };
         assert_eq!(a.kind, "requires-finite");
         assert_eq!(a.args, vec!["min=0"]);
+    }
+
+    // ---- #32 / #34: landing stats, tree, security/tag facets ----
+
+    /// A two-level model with mixed kinds: stats must count every component and
+    /// the structural metrics from the model alone (#32).
+    fn stats_model() -> DocModel {
+        DocModel {
+            title: "Demo".into(),
+            target_hardware: None,
+            enums: vec![EnumDoc {
+                name: "Switch".into(),
+                anchor: "switch".into(),
+                ..Default::default()
+            }],
+            groups: vec![
+                GroupDoc {
+                    path: "Root".into(),
+                    children: vec!["Root.Engine".into()],
+                    ..Default::default()
+                },
+                GroupDoc {
+                    path: "Root.Engine".into(),
+                    symbols: vec![
+                        SymbolDoc {
+                            path: "Root.Engine.Speed".into(),
+                            kind: SymbolDocKind::Channel,
+                            security: Some("Tune".into()),
+                            tags: vec!["engine".into()],
+                            ..Default::default()
+                        },
+                        SymbolDoc {
+                            path: "Root.Engine.Gain".into(),
+                            kind: SymbolDocKind::Parameter,
+                            security: Some("Calibration".into()),
+                            tags: vec!["engine".into(), "fuel".into()],
+                            ..Default::default()
+                        },
+                    ],
+                    functions: vec![FunctionDoc {
+                        path: "Root.Engine.Update".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn stats_count_every_kind_and_structure() {
+        let s = stats_model().stats();
+        assert_eq!(s.channels, 1);
+        assert_eq!(s.parameters, 1);
+        assert_eq!(s.functions, 1);
+        assert_eq!(s.enums, 1);
+        assert_eq!(s.groups, 2);
+        assert_eq!(s.top_level_groups, 1, "only Root is a forest root");
+        assert_eq!(s.max_depth, 2, "Root.Engine is two segments deep");
+        assert_eq!(s.total_components(), 3, "1 channel + 1 param + 1 function");
+    }
+
+    #[test]
+    fn top_level_tree_lists_forest_roots_with_direct_counts() {
+        let tree = stats_model().top_level_tree();
+        assert_eq!(tree.len(), 1, "only Root is top-level");
+        assert_eq!(tree[0].path, "Root");
+        // Root itself carries no direct members; its children hold them.
+        assert_eq!(tree[0].direct_count, 0);
+        // The subtree rolls up the 3 components under Root.Engine.
+        assert_eq!(tree[0].subtree_count, 3);
+        assert!(tree[0].has_children, "Root has the Engine child group");
+    }
+
+    #[test]
+    fn security_levels_are_sorted_deduped() {
+        let levels = stats_model().security_levels();
+        assert_eq!(levels, vec!["Calibration".to_string(), "Tune".to_string()]);
+    }
+
+    #[test]
+    fn tags_are_sorted_deduped_across_symbols() {
+        let tags = stats_model().tags();
+        assert_eq!(tags, vec!["engine".to_string(), "fuel".to_string()]);
+    }
+
+    #[test]
+    fn empty_model_has_zeroed_stats_and_no_facets() {
+        let m = DocModel::default();
+        let s = m.stats();
+        assert_eq!(s.total_components(), 0);
+        assert_eq!(s.max_depth, 0);
+        assert!(m.security_levels().is_empty());
+        assert!(m.tags().is_empty());
+        assert!(m.top_level_tree().is_empty());
     }
 }

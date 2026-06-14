@@ -14,7 +14,14 @@ m1-doc --project path/to/Project.m1prj --out site --format both
 `--project` defaults to the nearest `Project.m1prj` upward (or `$M1_PROJECT`).
 `--format` is `markdown`, `html`, or `both` (default). Markdown is the canonical
 output; HTML is rendered from it (so the two never diverge) into a self-contained
-site with a group sidebar.
+site.
+
+The HTML site is a single, dependency-free bundle (inline CSS/JS, no CDN, works
+from `file://` and GitHub Pages): a project overview landing page (stats, target
+hardware, group tree), a collapsible nav tree with an in-page table of contents
+and hover permalinks, a responsive layout with dark mode, client-side search over
+every symbol/function/table/enum, a security legend, and live filtering of rows
+by security level and tag.
 
 ## Publishing to GitHub Pages
 

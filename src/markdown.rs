@@ -43,15 +43,6 @@ fn last_segment(path: &str) -> &str {
     path.rsplit('.').next().unwrap_or(path)
 }
 
-/// The parent group of a path (everything before the last dot), or `""` for a
-/// single-segment root.
-fn parent_path(path: &str) -> &str {
-    match path.rfind('.') {
-        Some(i) => &path[..i],
-        None => "",
-    }
-}
-
 /// Render a `Root › Engine › Fuel` breadcrumb: every ancestor segment is a link
 /// to its own page; the current (last) segment is plain text.
 fn render_breadcrumb(path: &str) -> String {
@@ -199,6 +190,42 @@ fn section_shows_class(rows: &[&SymbolDoc], kind: SymbolDocKind) -> bool {
         .any(|s| s.classname.as_deref().is_some_and(|c| c != plain))
 }
 
+/// Whether a section's rows should carry a Tags column: true when any row is
+/// tagged. Keeps untagged projects (the common case) uncluttered (#34).
+fn section_shows_tags(rows: &[&SymbolDoc]) -> bool {
+    rows.iter().any(|s| !s.tags.is_empty())
+}
+
+/// The inline row anchor that also carries the security level and tags as
+/// `data-` attributes so the HTML filter can show/hide the row by level or tag
+/// (#34). The element is raw HTML that pulldown-cmark passes through verbatim
+/// into the `<td>`, so the metadata reaches the rendered table without a
+/// separate data channel. Tags are space-joined; an empty level/tag set is
+/// simply absent. The `class="m1-row-anchor"` lets the filter JS find the row.
+fn row_anchor(s: &SymbolDoc) -> String {
+    let mut attrs = format!(" id=\"{}\" class=\"m1-row-anchor\"", s.anchor);
+    if let Some(sec) = &s.security {
+        attrs.push_str(&format!(" data-security=\"{sec}\""));
+    }
+    if !s.tags.is_empty() {
+        attrs.push_str(&format!(" data-tags=\"{}\"", s.tags.join(" ")));
+    }
+    format!("<a{attrs}></a>")
+}
+
+/// Render a symbol's Tags cell: each tag as inline code, or `—` when untagged.
+fn tags_cell(s: &SymbolDoc) -> String {
+    if s.tags.is_empty() {
+        "—".to_string()
+    } else {
+        s.tags
+            .iter()
+            .map(|t| format!("`{t}`"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// Format an `f64` for a CAN cell: trim trailing zeros so `0.50` → `0.5` and
 /// `2.0` → `2`.
 fn fmt_f64(v: f64) -> String {
@@ -335,16 +362,24 @@ fn render_group(
         }
         // A Class column appears only when a row's class is not the plain
         // builtin — so sensor inputs / generated methods are disambiguated
-        // without cluttering the common all-`BuiltIn.Channel` case (#28).
+        // without cluttering the common all-`BuiltIn.Channel` case (#28). A
+        // Tags column appears only when some row is tagged (#34). Tags sit
+        // before Class so the common (#28) `Security | Class |` shape is intact.
         let show_class = section_shows_class(&rows, kind);
+        let show_tags = section_shows_tags(&rows);
+        let tags_h = if show_tags { " Tags |" } else { "" };
+        let tags_s = if show_tags { " --- |" } else { "" };
         let class_h = if show_class { " Class |" } else { "" };
         let class_s = if show_class { " --- |" } else { "" };
         let _ = writeln!(out, "## {}\n", kind.plural());
         let _ = writeln!(
             out,
-            "| Name | Type | Quantity | Unit | Base | Log rate | Security |{class_h}"
+            "| Name | Type | Quantity | Unit | Base | Log rate | Security |{tags_h}{class_h}"
         );
-        let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- | --- |{class_s}");
+        let _ = writeln!(
+            out,
+            "| --- | --- | --- | --- | --- | --- | --- |{tags_s}{class_s}"
+        );
         for s in rows {
             // Show the base unit only when it differs from the display unit —
             // collapse the redundant case (and when either is absent).
@@ -352,17 +387,24 @@ fn render_group(
                 (Some(disp), Some(base)) if disp != base => base,
                 _ => "—",
             };
+            let tags_col = if show_tags {
+                format!(" {} |", tags_cell(s))
+            } else {
+                String::new()
+            };
             let class_cell = if show_class {
                 format!(" {} |", s.classname.as_deref().unwrap_or("—"))
             } else {
                 String::new()
             };
             // Leading inline anchor in the Name cell makes the row linkable as
-            // `<group>.md#<anchor>`; it carries into the HTML table verbatim.
+            // `<group>.md#<anchor>`; it also carries the security/tags filter
+            // metadata as data attributes for the HTML filter (#34). It passes
+            // into the HTML table verbatim.
             let _ = writeln!(
                 out,
-                "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} | {} | {} |{}",
-                s.anchor,
+                "| {}`{}` | {} | {} | {} | {} | {} | {} |{}{}",
+                row_anchor(s),
                 s.path,
                 type_cell(s, enum_anchors),
                 s.quantity.as_deref().unwrap_or("—"),
@@ -370,6 +412,7 @@ fn render_group(
                 base,
                 format_rate(s.log_rate_hz),
                 s.security.as_deref().unwrap_or("—"),
+                tags_col,
                 class_cell,
             );
         }
@@ -402,23 +445,153 @@ fn render_group(
     out
 }
 
+/// Pluralise a count for the stats line: `1 channel`, `2 channels`, `0 tables`.
+fn count_phrase(n: usize, singular: &str) -> String {
+    if n == 1 {
+        format!("{n} {singular}")
+    } else {
+        format!("{n} {singular}s")
+    }
+}
+
+/// The one-line project summary: total components and the per-kind breakdown,
+/// computed from the model (#32). Only non-zero kinds appear so the line stays
+/// readable on small projects, but `components` and `groups` are always shown.
+fn stats_line(model: &DocModel) -> String {
+    let s = model.stats();
+    let mut parts = vec![count_phrase(s.total_components(), "component")];
+    for (n, word) in [
+        (s.channels, "channel"),
+        (s.parameters, "parameter"),
+        (s.constants, "constant"),
+        (s.functions, "function"),
+        (s.tables, "table"),
+        (s.objects, "object"),
+        (s.can_messages, "CAN message"),
+        (s.enums, "enum"),
+    ] {
+        if n > 0 {
+            parts.push(count_phrase(n, word));
+        }
+    }
+    parts.push(count_phrase(s.top_level_groups, "top-level group"));
+    parts.join(" · ")
+}
+
+/// The tag-index page filename for a tag, slugged so it is link-safe
+/// (`fuel` → `tag.fuel.md`, `Powertrain Fuel` → `tag.powertrain-fuel.md`).
+fn tag_filename(tag: &str) -> String {
+    format!("tag.{}.md", crate::model::anchor_slug(tag))
+}
+
 fn render_index(model: &DocModel) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}\n", model.title);
-    let _ = writeln!(out, "## Groups\n");
-    // List only the forest-root groups (those whose parent is not itself a
-    // documented group); the full tree is reachable by descending from them.
-    let present: std::collections::HashSet<&str> =
-        model.groups.iter().map(|g| g.path.as_str()).collect();
-    for g in &model.groups {
-        let parent = parent_path(&g.path);
-        if parent.is_empty() || !present.contains(parent) {
-            let _ = writeln!(out, "- [{}]({})", g.path, group_filename(&g.path));
+
+    // Target hardware: degrade-never-fake. The project API does not expose it
+    // yet (#32), so we say so explicitly rather than invent a value.
+    match &model.target_hardware {
+        Some(hw) => {
+            let _ = writeln!(out, "**Target hardware:** {hw}\n");
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "**Target hardware:** — *(not exposed by the project API yet)*\n"
+            );
         }
     }
+
+    // Summary stats line.
+    let _ = writeln!(out, "{}\n", stats_line(model));
+
+    // The group tree: forest roots with per-group direct counts. The full tree
+    // is reachable by descending from each root's page.
+    let _ = writeln!(out, "## Structure\n");
+    for node in model.top_level_tree() {
+        // The count is the whole subtree so a top-level group reads its size at
+        // a glance; `▸` marks an expandable node (the HTML nav makes it live).
+        let suffix = if node.has_children { " ▸" } else { "" };
+        let _ = writeln!(
+            out,
+            "- [{}]({}) ({}){suffix}",
+            node.path,
+            group_filename(&node.path),
+            node.subtree_count,
+        );
+    }
+    out.push('\n');
+
+    // Security legend: every level the project declares, with a one-line gloss
+    // (#34). Skipped entirely when the project declares no security at all.
+    let levels = model.security_levels();
+    if !levels.is_empty() {
+        let _ = writeln!(out, "## Security levels\n");
+        let _ = writeln!(
+            out,
+            "Access level required to view or calibrate a value. Levels present in this project:\n"
+        );
+        for level in &levels {
+            let _ = writeln!(out, "- **{level}** — {}", security_gloss(level));
+        }
+        out.push('\n');
+    }
+
+    // Tag facet: link each per-tag index page (#34). Skipped when untagged.
+    let tags = model.tags();
+    if !tags.is_empty() {
+        let _ = writeln!(out, "## Tags\n");
+        for tag in &tags {
+            let _ = writeln!(out, "- [{tag}]({})", tag_filename(tag));
+        }
+        out.push('\n');
+    }
+
     if !model.enums.is_empty() {
-        let _ = writeln!(out, "\n## Reference\n");
+        let _ = writeln!(out, "## Reference\n");
         let _ = writeln!(out, "- [Enums]({ENUMS_FILE})");
+    }
+    out
+}
+
+/// A short, fixed gloss for the security/access levels MoTeC M1 projects use.
+/// Unknown levels degrade to a generic note rather than being dropped (#34).
+fn security_gloss(level: &str) -> &'static str {
+    match level {
+        "Tune" => "tunable at the Tune access level",
+        "Calibration" => "calibration data, editable with a Calibration licence",
+        "Master Calibration" => "master-calibration data (highest calibration tier)",
+        "Resource" => "resource/IO assignment level",
+        "Engineering" => "engineering-only, not exposed to calibrators",
+        "Read Only" => "read-only; not editable in MoTeC M1 Tune",
+        _ => "project-defined access level",
+    }
+}
+
+/// Render a per-tag index page: every symbol carrying `tag`, deep-linked to its
+/// row on the owning group page (#34). Deterministic — symbols are walked in
+/// model order (groups sorted, members sorted), so the listing is stable.
+fn render_tag_index(model: &DocModel, tag: &str) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "[Index](index.md)\n");
+    let _ = writeln!(out, "# Tag: {tag}\n");
+    let mut any = false;
+    for g in &model.groups {
+        for s in &g.symbols {
+            if s.tags.iter().any(|t| t == tag) {
+                any = true;
+                let _ = writeln!(
+                    out,
+                    "- [{}]({}#{})",
+                    s.path,
+                    group_filename(&g.path),
+                    s.anchor,
+                );
+            }
+        }
+    }
+    if !any {
+        let _ = writeln!(out, "(no symbols carry this tag)");
     }
     out
 }
@@ -482,6 +655,14 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
             body: render_group(g, &enum_anchors, opts),
         });
     }
+    // One index page per tag (#34), in sorted tag order so the output is
+    // deterministic. Each lists every symbol carrying the tag, deep-linked.
+    for tag in model.tags() {
+        files.push(RenderedFile {
+            path: tag_filename(&tag),
+            body: render_tag_index(model, &tag),
+        });
+    }
     if !model.enums.is_empty() {
         files.push(RenderedFile {
             path: ENUMS_FILE.to_string(),
@@ -501,6 +682,7 @@ mod tests {
     fn sample() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -524,6 +706,7 @@ mod tests {
     fn sample_with_functions() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -567,6 +750,158 @@ mod tests {
         );
     }
 
+    // ---- #32: overview landing page ----
+
+    fn landing_model() -> DocModel {
+        DocModel {
+            title: "UQR-EV".into(),
+            target_hardware: None,
+            enums: vec![EnumDoc {
+                name: "Switch".into(),
+                anchor: "switch".into(),
+                ..Default::default()
+            }],
+            groups: vec![
+                GroupDoc {
+                    path: "Root".into(),
+                    children: vec!["Root.Engine".into()],
+                    ..Default::default()
+                },
+                GroupDoc {
+                    path: "Root.Engine".into(),
+                    symbols: vec![
+                        SymbolDoc {
+                            path: "Root.Engine.Speed".into(),
+                            kind: SymbolDocKind::Channel,
+                            type_label: "f32".into(),
+                            security: Some("Tune".into()),
+                            ..Default::default()
+                        },
+                        SymbolDoc {
+                            path: "Root.Engine.Gain".into(),
+                            kind: SymbolDocKind::Parameter,
+                            type_label: "u16".into(),
+                            security: Some("Calibration".into()),
+                            tags: vec!["fuel".into()],
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn index_shows_summary_stats_line() {
+        let files = render(&landing_model());
+        let index = &files[0];
+        // Headline title + a stats line with the headline counts.
+        assert!(index.body.contains("# UQR-EV"), "got:\n{}", index.body);
+        assert!(
+            index.body.contains("2 components")
+                && index.body.contains("1 channel")
+                && index.body.contains("1 parameter")
+                && index.body.contains("1 top-level group"),
+            "stats line missing counts; got:\n{}",
+            index.body
+        );
+    }
+
+    #[test]
+    fn index_notes_unknown_target_hardware() {
+        let files = render(&landing_model());
+        let index = &files[0];
+        // Degrade-never-fake: target hardware is not exposed by the project API.
+        assert!(
+            index.body.contains("Target hardware")
+                && index.body.contains("not exposed by the project"),
+            "target-hardware degrade note missing; got:\n{}",
+            index.body
+        );
+    }
+
+    #[test]
+    fn index_renders_group_tree_with_per_group_counts() {
+        let files = render(&landing_model());
+        let index = &files[0];
+        // Nested tree: the forest root links to its page and shows a count.
+        assert!(
+            index.body.contains("## Structure"),
+            "structure section missing; got:\n{}",
+            index.body
+        );
+        assert!(
+            index.body.contains("[Root](Root.md)"),
+            "tree must link the forest root; got:\n{}",
+            index.body
+        );
+        // Root's subtree rolls up the two members under Root.Engine, and the
+        // node is marked expandable.
+        assert!(
+            index.body.contains("[Root](Root.md) (2) ▸"),
+            "per-group subtree count / expandable marker missing; got:\n{}",
+            index.body
+        );
+    }
+
+    // ---- #34: security legend + tag column + tag index pages ----
+
+    #[test]
+    fn index_renders_security_legend_for_levels_present() {
+        let files = render(&landing_model());
+        let index = &files[0];
+        assert!(
+            index.body.contains("## Security levels"),
+            "legend heading missing; got:\n{}",
+            index.body
+        );
+        assert!(
+            index.body.contains("Calibration") && index.body.contains("Tune"),
+            "legend must list each level present; got:\n{}",
+            index.body
+        );
+    }
+
+    #[test]
+    fn tag_index_page_links_tagged_symbols() {
+        let files = render(&landing_model());
+        // A per-tag index page is emitted for the `fuel` tag.
+        let page = files
+            .iter()
+            .find(|f| f.path == "tag.fuel.md")
+            .expect("expected a tag.fuel.md index page");
+        assert!(
+            page.body.contains("Root.Engine.Gain") && page.body.contains("Root.Engine.md#"),
+            "tag page must deep-link its tagged symbols; got:\n{}",
+            page.body
+        );
+        // The index links the tag facet.
+        let index = &files[0];
+        assert!(
+            index.body.contains("[fuel](tag.fuel.md)"),
+            "index must link the tag facet; got:\n{}",
+            index.body
+        );
+    }
+
+    #[test]
+    fn group_table_shows_tags_column_only_when_tagged() {
+        let files = render(&landing_model());
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        // The Parameters section has a tagged row → a Tags column appears there.
+        assert!(
+            page.body.contains("| Tags |"),
+            "Tags column header missing when a row is tagged; got:\n{}",
+            page.body
+        );
+        assert!(
+            page.body.contains("`fuel`"),
+            "tag value missing from row; got:\n{}",
+            page.body
+        );
+    }
+
     #[test]
     fn group_page_tables_its_channels() {
         let files = render(&sample());
@@ -583,6 +918,7 @@ mod tests {
     fn sample_with_constant() -> DocModel {
         DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -688,6 +1024,7 @@ mod tests {
         use crate::model::AnnotationDoc;
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -748,6 +1085,7 @@ mod tests {
     fn function_with_return_type_renders_returns_line() {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -801,6 +1139,7 @@ mod tests {
         // the channel carries a quantity and a log rate.
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -862,6 +1201,7 @@ mod tests {
     fn enums_reference_lists_closed_enum_with_members_and_default(/* #27 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             groups: vec![],
             enums: vec![EnumDoc {
                 name: "MoTeC Types.Switch".into(),
@@ -901,6 +1241,7 @@ mod tests {
     fn open_enum_is_labelled_partial(/* #27 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             groups: vec![],
             enums: vec![EnumDoc {
                 name: "Gear State".into(),
@@ -924,6 +1265,7 @@ mod tests {
     fn enum_typed_symbol_links_to_its_reference_entry(/* #27 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![EnumDoc {
                 name: "Switch".into(),
                 anchor: "switch".into(),
@@ -957,6 +1299,7 @@ mod tests {
     fn group_page_renders_tables_section_with_dimensionality(/* #26 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -1003,6 +1346,7 @@ mod tests {
     fn table_without_cfg_metadata_is_still_listed(/* #26 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -1029,6 +1373,7 @@ mod tests {
     fn group_page_has_breadcrumb_and_subgroup_links(/* #23 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine.Fuel".into(),
@@ -1061,6 +1406,7 @@ mod tests {
     fn index_links_only_forest_roots_not_every_node(/* #23 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![
                 GroupDoc {
@@ -1093,6 +1439,7 @@ mod tests {
     fn rows_and_functions_emit_their_stable_anchor(/* #24 */) {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -1117,9 +1464,11 @@ mod tests {
         let files = render(&model);
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
         // Symbol row carries a leading inline anchor → `Root.Engine.md#root-engine-speed`.
+        // The anchor also carries the filter class (#34).
         assert!(
-            page.body
-                .contains("| <a id=\"root-engine-speed\"></a>`Root.Engine.Speed`"),
+            page.body.contains(
+                "| <a id=\"root-engine-speed\" class=\"m1-row-anchor\"></a>`Root.Engine.Speed`"
+            ),
             "symbol row missing its anchor; got:\n{}",
             page.body
         );
@@ -1135,6 +1484,7 @@ mod tests {
     fn function_renders_call_rate_and_dash_when_absent() {
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
@@ -1179,6 +1529,7 @@ mod tests {
         use crate::model::ObjectDoc;
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Inputs".into(),
@@ -1220,6 +1571,7 @@ mod tests {
         use crate::model::{CanMessageDoc, CanSignalDoc};
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Bus".into(),
@@ -1270,6 +1622,7 @@ mod tests {
         use crate::model::CanMessageDoc;
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Bus".into(),
@@ -1298,6 +1651,7 @@ mod tests {
         // (MoTeC Input.Sensor.Resource) — the section must show a Class column.
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Inputs".into(),
@@ -1415,6 +1769,7 @@ mod tests {
         // Every channel is a plain BuiltIn.Channel → no Class column (no clutter).
         let model = DocModel {
             title: "Demo".into(),
+            target_hardware: None,
             enums: vec![],
             groups: vec![GroupDoc {
                 path: "Root.Engine".into(),
