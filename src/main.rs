@@ -14,9 +14,6 @@ use std::process;
     about = "Documentation generator for MoTeC M1 projects"
 )]
 struct Args {
-    /// Script files to document. Function docs from FILES are not generated
-    /// yet; passing scripts currently has no effect (a warning is printed).
-    files: Vec<PathBuf>,
     /// Project.m1prj (defaults to nearest upward, or $M1_PROJECT).
     #[arg(long)]
     project: Option<PathBuf>,
@@ -29,6 +26,15 @@ struct Args {
     /// Index heading (defaults to the project file's directory name).
     #[arg(long)]
     title: Option<String>,
+    /// Base URL prepended to each function's source path to build a link to the
+    /// `.m1scr` in the published site (e.g.
+    /// `https://github.com/UQRacing/EV-M1/blob/main`). Without it, source paths
+    /// are shown as plain text.
+    #[arg(long, alias = "repo-url")]
+    source_base: Option<String>,
+    /// Embed each function's script body in a collapsible block (off by default).
+    #[arg(long)]
+    include_source: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -62,18 +68,6 @@ fn resolve_project(arg: Option<PathBuf>) -> Option<PathBuf> {
 fn main() {
     let args = Args::parse();
 
-    // Positional FILES are accepted but not yet consumed (function-doc ingestion
-    // is a future feature). Silently dropping user-supplied paths is a footgun,
-    // so say so rather than exiting 0 as if they were processed (#17).
-    if !args.files.is_empty() {
-        eprintln!(
-            "m1-doc: note: {} script file(s) were passed but are not used yet \
-             (function docs from FILES land in a future release); generating \
-             project docs only.",
-            args.files.len()
-        );
-    }
-
     let Some(project_path) = resolve_project(args.project) else {
         eprintln!("m1-doc: no Project.m1prj found (pass --project or set $M1_PROJECT)");
         process::exit(2);
@@ -100,8 +94,13 @@ fn main() {
         process::exit(1);
     }
 
-    // Build Markdown files once; HTML renderer consumes them.
-    let md_files = markdown::render(&model);
+    // Build Markdown files once; HTML renderer consumes them. Function source
+    // links / embedding are driven by the CLI flags (#30).
+    let render_opts = markdown::RenderOptions {
+        source_base: args.source_base,
+        include_source: args.include_source,
+    };
+    let md_files = markdown::render_with(&model, &render_opts);
 
     /// Write a single [`markdown::RenderedFile`] under `out`, exiting on error.
     fn write_file(out: &std::path::Path, file: &markdown::RenderedFile) {
@@ -131,5 +130,41 @@ fn main() {
                 write_file(&args.out, f);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// #30: the inert `FILES` positional is gone — a stray positional now errors
+    /// rather than being silently dropped (no more no-op footgun, ex-#17).
+    #[test]
+    fn stray_positional_is_rejected() {
+        let err = Args::try_parse_from(["m1-doc", "Some.m1scr"]);
+        assert!(
+            err.is_err(),
+            "a positional arg must be rejected now that FILES is removed"
+        );
+    }
+
+    /// #30: the new source flags parse, including the `--repo-url` alias.
+    #[test]
+    fn source_flags_parse() {
+        let a = Args::try_parse_from([
+            "m1-doc",
+            "--source-base",
+            "https://example/blob/main",
+            "--include-source",
+        ])
+        .expect("source flags should parse");
+        assert_eq!(a.source_base.as_deref(), Some("https://example/blob/main"));
+        assert!(a.include_source);
+
+        let b = Args::try_parse_from(["m1-doc", "--repo-url", "https://x/blob/main"])
+            .expect("--repo-url alias should parse");
+        assert_eq!(b.source_base.as_deref(), Some("https://x/blob/main"));
+        assert!(!b.include_source, "include_source defaults off");
     }
 }

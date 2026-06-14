@@ -69,6 +69,9 @@ fn function_doc(sym: &Symbol) -> FunctionDoc {
         return_type,
         annotations: Vec::new(),
         call_rate_hz: sym.call_rate_hz,
+        // Filled in by the `load()` post-pass once the script is located.
+        source_path: None,
+        source_text: None,
     }
 }
 
@@ -240,6 +243,17 @@ fn resolve_script(project_dir: &std::path::Path, filename: &str) -> Option<std::
     find_file_in_dir(project_dir, filename)
 }
 
+/// The script's path relative to the project directory, forward-slashed for a
+/// stable URL/link (e.g. `Engine/Update.m1scr`). Falls back to the file's base
+/// name when it lies outside the project tree (#30).
+fn relative_source_path(project_dir: &std::path::Path, script_path: &std::path::Path) -> String {
+    let rel = script_path.strip_prefix(project_dir).unwrap_or(script_path);
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Recursively search `dir` for the first file whose base name matches `name`.
 fn find_file_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
@@ -333,6 +347,10 @@ pub fn load(
             let bytes = std::fs::read(&script_path).unwrap_or_default();
             let source = String::from_utf8_lossy(&bytes);
             func.annotations = parse_annotations(&source);
+            // Retain the source link + body (#30): the project-relative path for
+            // a source link, and the text so `--include-source` can embed it.
+            func.source_path = Some(relative_source_path(project_dir, &script_path));
+            func.source_text = Some(source.into_owned());
         }
     }
 
@@ -743,6 +761,57 @@ mod tests {
             f.annotations[0].args.is_empty(),
             "requires-finite has no args; got {:?}",
             f.annotations[0].args
+        );
+    }
+
+    /// #30: a function whose `Filename=` resolves to a script on disk must carry
+    /// the project-relative source path and the body (for `--include-source`).
+    #[test]
+    fn function_retains_source_path_and_body() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        let scripts = dir.path().join("Scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        let script_path = scripts.join("Update.m1scr");
+
+        fs::write(
+            &prj_path,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.FuncUser" Filename="Update.m1scr" Name="Root.Engine.Update"/>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+        fs::write(&script_path, "Out = In.Speed * 2;\n").unwrap();
+
+        let model = load(&prj_path, "T".into()).unwrap();
+        let f = &model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group")
+            .functions[0];
+        // Path is project-relative and forward-slashed (the recursive walk found
+        // it under Scripts/).
+        assert_eq!(
+            f.source_path.as_deref(),
+            Some("Scripts/Update.m1scr"),
+            "source path wrong; got {:?}",
+            f.source_path
+        );
+        assert_eq!(
+            f.source_text.as_deref(),
+            Some("Out = In.Speed * 2;\n"),
+            "source body not retained; got {:?}",
+            f.source_text
         );
     }
 
