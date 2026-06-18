@@ -1201,7 +1201,7 @@ mod tests {
 
     // ---- richer fixture for #31 / #33 / #34 ----
 
-    use crate::model::{EnumDoc, FunctionDoc, TableDoc};
+    use crate::model::{EnumDoc, EnumMemberDoc, FunctionDoc, TableDoc};
 
     fn rich_model() -> DocModel {
         DocModel {
@@ -1210,7 +1210,16 @@ mod tests {
             enums: vec![EnumDoc {
                 name: "Switch".into(),
                 anchor: "switch".into(),
-                members: vec!["Off".into(), "On".into()],
+                members: vec![
+                    EnumMemberDoc {
+                        name: "Off".into(),
+                        value: 0,
+                    },
+                    EnumMemberDoc {
+                        name: "On".into(),
+                        value: 1,
+                    },
+                ],
                 default: Some("Off".into()),
                 open: false,
             }],

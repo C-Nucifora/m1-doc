@@ -174,16 +174,30 @@ pub struct CanMessageDoc {
 }
 
 /// One documented enum type used in the project: its name, enumerators (member
-/// names in container order), default value, and whether it is `open`
-/// (firmware-supplied — the listed members may not be exhaustive).
+/// name + numeric value, in container order), default value, and whether it is
+/// `open` (firmware-supplied — the listed members may not be exhaustive).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EnumDoc {
     pub name: String,
     /// Stable, page-unique anchor id within the Enums reference page.
     pub anchor: String,
-    pub members: Vec<String>,
+    pub members: Vec<EnumMemberDoc>,
     pub default: Option<String>,
     pub open: bool,
+}
+
+/// One enumerator of an [`EnumDoc`]: its name and the underlying numeric value.
+///
+/// The M1 Development Manual (Data Types > Enumeration) defines an enum as a
+/// value→name mapping (e.g. `-1 = Error`, `0 = Stopped`, `1 = Cranking`, …) —
+/// the `value` is what is stored on the wire / in logs and what scripts compare
+/// against, so it is definitional, not decoration. For project-local enums it
+/// is the `ContainerOrder`; for builtin/intrinsic enums it is the enumerator's
+/// `value`. m1-typecheck treats both as the enumerator value.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct EnumMemberDoc {
+    pub name: String,
+    pub value: i64,
 }
 
 /// One input axis of a calibration table: its breakpoint count and (when the
