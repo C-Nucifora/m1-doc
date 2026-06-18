@@ -194,7 +194,17 @@ fn write_enum(w: &mut Writer, e: &EnumDoc) {
     w.object(|w| {
         w.field_str("name", &e.name);
         w.field_str("anchor", &e.anchor);
-        w.field("members", |w| w.string_array(&e.members));
+        // Each member carries its numeric value (the value stored on the wire /
+        // in logs), not just the name — the manual defines an enum as a
+        // value→name mapping.
+        w.field("members", |w| {
+            w.array(&e.members, |w, m| {
+                w.object(|w| {
+                    w.field_str("name", &m.name);
+                    w.field_i64("value", m.value);
+                });
+            });
+        });
         w.field_opt_str("default", e.default.as_deref());
         w.field_bool("open", e.open);
     });
@@ -298,6 +308,12 @@ impl Writer {
         });
     }
 
+    fn field_i64(&mut self, key: &str, value: i64) {
+        self.field(key, |w| {
+            let _ = write!(w.buf, "{value}");
+        });
+    }
+
     fn field_opt_u32(&mut self, key: &str, value: Option<u32>) {
         match value {
             Some(v) => self.field_u32(key, v),
@@ -367,8 +383,8 @@ fn write_json_string(out: &mut String, s: &str) {
 mod tests {
     use super::*;
     use crate::model::{
-        AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc,
-        ObjectDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
+        AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, EnumMemberDoc, FunctionDoc,
+        GroupDoc, ObjectDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
     };
 
     /// A model exercising every entity kind and every optional field (both the
@@ -448,7 +464,16 @@ mod tests {
             enums: vec![EnumDoc {
                 name: "Switch".into(),
                 anchor: "switch".into(),
-                members: vec!["Off".into(), "On".into()],
+                members: vec![
+                    EnumMemberDoc {
+                        name: "Off".into(),
+                        value: 0,
+                    },
+                    EnumMemberDoc {
+                        name: "On".into(),
+                        value: 1,
+                    },
+                ],
                 default: Some("Off".into()),
                 open: false,
             }],
@@ -504,6 +529,9 @@ mod tests {
             "\"dlc\": 8",
             "\"range\": [0.0, 8000.0]",
             "\"name\": \"Switch\"",
+            // Each enumerator carries its numeric value, not just its name.
+            "\"name\": \"On\"",
+            "\"value\": 1",
             "\"open\": false",
         ] {
             assert!(json.contains(needle), "missing {needle:?}; got:\n{json}");

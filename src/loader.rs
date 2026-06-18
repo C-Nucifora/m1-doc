@@ -5,8 +5,9 @@
 //! node so the full tree is navigable.
 
 use crate::model::{
-    AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, FunctionDoc, GroupDoc,
-    ObjectDoc, ReferenceDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc, anchor_slug,
+    AnnotationDoc, CanMessageDoc, CanSignalDoc, DocModel, EnumDoc, EnumMemberDoc, FunctionDoc,
+    GroupDoc, ObjectDoc, ReferenceDoc, SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
+    anchor_slug,
 };
 use m1_typecheck::Project;
 use m1_typecheck::symbols::{Symbol, SymbolKind, SymbolTable};
@@ -506,7 +507,13 @@ fn collect_enums(table: &SymbolTable) -> Vec<EnumDoc> {
             EnumDoc {
                 name: et.name.clone(),
                 anchor: anchor_slug(&et.name),
-                members: members.into_iter().map(|(n, _)| n).collect(),
+                // Keep the numeric value (`ContainerOrder` for project-local
+                // enums, the enumerator `value` for builtin ones) — it is what
+                // a reader needs to interpret a logged value or a CAN payload.
+                members: members
+                    .into_iter()
+                    .map(|(name, value)| EnumMemberDoc { name, value })
+                    .collect(),
                 default: et.default.clone(),
                 open: et.open,
             }

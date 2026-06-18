@@ -149,8 +149,8 @@ fn golden_enums_page() {
 \n\
 ## Drive State (default: Off)\n\
 \n\
-- Off\n\
-- On\n\
+- 0 = Off (default)\n\
+- 1 = On\n\
 \n";
     assert_eq!(read(&out, "enums.md"), expected);
 }

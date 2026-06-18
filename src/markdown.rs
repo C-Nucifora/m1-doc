@@ -858,8 +858,16 @@ fn render_enums(enums: &[EnumDoc]) -> String {
         if e.members.is_empty() {
             let _ = writeln!(out, "(no enumerators available)\n");
         } else {
+            // `value = name` — the manual defines an enum as a value→name map,
+            // so the numeric value (stored on the wire / in logs) is shown for
+            // every enumerator. The default member is marked.
             for m in &e.members {
-                let _ = writeln!(out, "- {m}");
+                let default = if e.default.as_deref() == Some(m.name.as_str()) {
+                    " (default)"
+                } else {
+                    ""
+                };
+                let _ = writeln!(out, "- {} = {}{default}", m.value, m.name);
             }
             out.push('\n');
         }
@@ -935,8 +943,8 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
 mod tests {
     use super::*;
     use crate::model::{
-        DocModel, EdgeKind, EnumDoc, FunctionDoc, GraphEdge, GroupDoc, ProjectGraph, SymbolDoc,
-        SymbolDocKind, TableAxisDoc, TableDoc,
+        DocModel, EdgeKind, EnumDoc, EnumMemberDoc, FunctionDoc, GraphEdge, GroupDoc, ProjectGraph,
+        SymbolDoc, SymbolDocKind, TableAxisDoc, TableDoc,
     };
 
     fn sample() -> DocModel {
@@ -1487,7 +1495,16 @@ mod tests {
             enums: vec![EnumDoc {
                 name: "MoTeC Types.Switch".into(),
                 anchor: "motec-types-switch".into(),
-                members: vec!["Off".into(), "On".into()],
+                members: vec![
+                    EnumMemberDoc {
+                        name: "Off".into(),
+                        value: 0,
+                    },
+                    EnumMemberDoc {
+                        name: "On".into(),
+                        value: 1,
+                    },
+                ],
                 default: Some("Off".into()),
                 open: false,
             }],
@@ -1506,9 +1523,11 @@ mod tests {
         );
         assert!(
             page.body.contains("<a id=\"motec-types-switch\"></a>")
-                && page.body.contains("- Off")
-                && page.body.contains("- On"),
-            "members/anchor missing; got:\n{}",
+                // Each enumerator is rendered `value = name`, with the default
+                // marked — the numeric value is part of what the enum is.
+                && page.body.contains("- 0 = Off (default)")
+                && page.body.contains("- 1 = On"),
+            "members/anchor/values missing; got:\n{}",
             page.body
         );
         // The index links the reference.
@@ -1517,6 +1536,50 @@ mod tests {
             index.body.contains("[Enums](enums.md)"),
             "index should link the enums reference; got:\n{}",
             index.body
+        );
+    }
+
+    /// The manual defines an enum as a value→name mapping (its canonical
+    /// example is `-1 = Error`, `0 = Stopped (default)`, `1 = Cranking`, …), so
+    /// the Enums reference must render the numeric value of every enumerator —
+    /// including negative ones — and mark the default.
+    #[test]
+    fn enums_reference_shows_numeric_value_of_each_enumerator() {
+        let model = DocModel {
+            title: "Demo".into(),
+            target_hardware: None,
+            groups: vec![],
+            enums: vec![EnumDoc {
+                name: "Engine State".into(),
+                anchor: "engine-state".into(),
+                members: vec![
+                    EnumMemberDoc {
+                        name: "Error".into(),
+                        value: -1,
+                    },
+                    EnumMemberDoc {
+                        name: "Stopped".into(),
+                        value: 0,
+                    },
+                    EnumMemberDoc {
+                        name: "Cranking".into(),
+                        value: 1,
+                    },
+                ],
+                default: Some("Stopped".into()),
+                open: false,
+            }],
+            graph: crate::model::ProjectGraph::default(),
+            m1prj_path: None,
+        };
+        let files = render(&model);
+        let page = files.iter().find(|f| f.path == "enums.md").unwrap();
+        assert!(
+            page.body.contains("- -1 = Error")
+                && page.body.contains("- 0 = Stopped (default)")
+                && page.body.contains("- 1 = Cranking"),
+            "each enumerator must render `value = name` (default marked); got:\n{}",
+            page.body
         );
     }
 
@@ -1529,7 +1592,10 @@ mod tests {
             enums: vec![EnumDoc {
                 name: "Gear State".into(),
                 anchor: "gear-state".into(),
-                members: vec!["Neutral".into()],
+                members: vec![EnumMemberDoc {
+                    name: "Neutral".into(),
+                    value: 0,
+                }],
                 default: None,
                 open: true,
             }],
@@ -1554,7 +1620,16 @@ mod tests {
             enums: vec![EnumDoc {
                 name: "Switch".into(),
                 anchor: "switch".into(),
-                members: vec!["Off".into(), "On".into()],
+                members: vec![
+                    EnumMemberDoc {
+                        name: "Off".into(),
+                        value: 0,
+                    },
+                    EnumMemberDoc {
+                        name: "On".into(),
+                        value: 1,
+                    },
+                ],
                 default: Some("Off".into()),
                 open: false,
             }],
