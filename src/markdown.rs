@@ -191,8 +191,23 @@ fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
     if opts.include_source
         && let Some(body) = &f.source_text
     {
+        let body = body.trim_end();
+        // Escalate the fence past the longest backtick run inside the body so an
+        // embedded ``` (block comment, string literal, commented-out docs) can't
+        // close the code block early and leak the rest of the script as markup.
+        let longest_run = body
+            .bytes()
+            .fold((0usize, 0usize), |(cur, mx), b| {
+                if b == b'`' {
+                    (cur + 1, mx.max(cur + 1))
+                } else {
+                    (0, mx)
+                }
+            })
+            .1;
+        let fence = "`".repeat(longest_run.max(2) + 1);
         let _ = writeln!(out, "<details><summary>Source</summary>\n");
-        let _ = writeln!(out, "```m1\n{}\n```\n", body.trim_end());
+        let _ = writeln!(out, "{fence}m1\n{body}\n{fence}\n");
         let _ = writeln!(out, "</details>\n");
     }
     out
@@ -2131,6 +2146,41 @@ mod tests {
                 && out.contains("```m1\nOut = In.Speed * 2;\n```")
                 && out.contains("</details>"),
             "include_source must embed a collapsible code block; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn include_source_escalates_fence_past_embedded_backticks() {
+        // A script body whose own line is exactly three backticks (e.g. inside a
+        // block comment or a string literal) must NOT terminate the code fence
+        // early — the outer fence has to be longer than any run inside the body.
+        let mut f = fn_with_source();
+        f.source_text = Some("Out = 1;\n```\nstill source;\n".into());
+        let opts = RenderOptions {
+            source_base: None,
+            include_source: true,
+            graph: None,
+        };
+        let out = render_function(&f, &opts);
+        // The opening/closing fence must be 4+ backticks so the embedded ``` is
+        // treated as code, not as a fence terminator.
+        assert!(
+            out.contains("````m1\n"),
+            "fence must escalate past embedded triple-backtick; got:\n{out}"
+        );
+        // The whole body (including the line after the embedded fence) stays
+        // inside the code block, and </details> remains a separate block.
+        assert!(
+            out.contains("still source;"),
+            "body after embedded fence must be preserved; got:\n{out}"
+        );
+        assert!(
+            out.contains("````\n"),
+            "closing fence must match the escalated length; got:\n{out}"
+        );
+        assert!(
+            out.contains("</details>"),
+            "</details> must still be emitted; got:\n{out}"
         );
     }
 
