@@ -639,11 +639,38 @@ relationships{}.</div></figure>",
     )
 }
 
-/// Minimal HTML-text escaping for figure titles.
+/// Append `s` to `out` with HTML escaping. `& < >` are always escaped (the set
+/// that can inject markup in any context); when `attr` is set the
+/// attribute-delimiting `"` is additionally escaped so the result is safe inside
+/// a double-quoted attribute value.
+///
+/// This is the single implementation behind both [`html_escape`] (text context)
+/// and [`attr_escape`] (attribute context) — the two contexts differ only by the
+/// `"` flag, so they can never drift apart on the common `& < >` set the way two
+/// hand-rolled bodies could (mirrors the JSON escaper consolidation in
+/// [`crate::escape`]).
+///
+/// Note: spaces are deliberately left verbatim. The attribute callers escape
+/// group-path hrefs, which must keep spaces literal to match the on-disk page
+/// filename (`<group path>.html`).
+fn html_escape_into(out: &mut String, s: &str, attr: bool) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if attr => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// Minimal HTML-text escaping for figure titles. Escapes `& < >`, leaving `"`
+/// (and spaces) verbatim — for text contexts, not attribute values.
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    let mut out = String::with_capacity(s.len());
+    html_escape_into(&mut out, s, false);
+    out
 }
 
 /// Replace every `<!--m1-graph:mode:depth:group-->` sentinel (and the Mermaid
@@ -796,19 +823,13 @@ fn push_nav_node(
 // Toolbar, search, filters, legend (#31 / #33 / #34)
 // ---------------------------------------------------------------------------
 
-/// Escape a string for use inside a double-quoted HTML attribute. Only the
-/// characters that can break out of `"…"` or inject markup are touched.
+/// Escape a string for use inside a double-quoted HTML attribute. Escapes the
+/// markup-significant `& < >` plus the attribute-delimiting `"`; spaces are left
+/// verbatim so an href matches the on-disk page filename. Thin wrapper over
+/// [`html_escape_into`] with `attr = true`.
 fn attr_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            c => out.push(c),
-        }
-    }
+    html_escape_into(&mut out, s, true);
     out
 }
 
@@ -1599,5 +1620,68 @@ mod tests {
             !page.body.contains("<title>A <b>"),
             "raw unescaped <b> leaked into the page <title>"
         );
+    }
+
+    // The two public escapers share one implementation (a single `attr` flag),
+    // so they can never drift apart on the common `& < >` set the way two
+    // hand-rolled bodies could. This test pins that contract.
+    #[test]
+    fn text_and_attr_escapers_agree_except_on_double_quote() {
+        let sample = "a & b <c> \"d\" e";
+
+        // Both contexts always escape the markup-significant `& < >`.
+        for esc in [html_escape(sample), attr_escape(sample)] {
+            assert!(esc.contains("&amp;"), "'&' not escaped in: {esc}");
+            assert!(esc.contains("&lt;c&gt;"), "'<c>' not escaped in: {esc}");
+            assert!(!esc.contains(" & "), "raw '&' survived in: {esc}");
+        }
+
+        // The *only* difference is the attribute-delimiting double quote:
+        // text context leaves it verbatim, attribute context escapes it.
+        assert!(
+            html_escape(sample).contains('"'),
+            "text escaper must leave '\"' verbatim"
+        );
+        assert!(
+            !html_escape(sample).contains("&quot;"),
+            "text escaper must not escape '\"'"
+        );
+        assert!(
+            attr_escape(sample).contains("&quot;"),
+            "attribute escaper must escape '\"' to '&quot;'"
+        );
+        assert!(
+            !attr_escape(sample).contains('"'),
+            "attribute escaper must leave no raw '\"'"
+        );
+
+        // Apart from the `"` handling the two outputs are identical — proving
+        // the single shared body. Replacing the escaped quote in the attr form
+        // with a raw quote reconstructs the text form exactly.
+        assert_eq!(
+            attr_escape(sample).replace("&quot;", "\""),
+            html_escape(sample),
+            "the escapers must differ only by '\"'-handling"
+        );
+    }
+
+    // Load-bearing: `attr_escape` must leave spaces verbatim so an href matches
+    // the on-disk page filename (`<group path>.html` keeps spaces literal).
+    #[test]
+    fn attr_escape_leaves_spaces_verbatim() {
+        assert_eq!(attr_escape("Root.A B"), "Root.A B");
+    }
+
+    // The shared lower-level routine appends to a caller-supplied buffer and
+    // selects the attribute hardening via the `attr` flag.
+    #[test]
+    fn html_escape_into_appends_and_honours_attr_flag() {
+        let mut out = String::from("pre:");
+        html_escape_into(&mut out, "x \"y\" <z>", false);
+        assert_eq!(out, "pre:x \"y\" &lt;z&gt;");
+
+        let mut out = String::new();
+        html_escape_into(&mut out, "x \"y\" <z>", true);
+        assert_eq!(out, "x &quot;y&quot; &lt;z&gt;");
     }
 }
