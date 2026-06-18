@@ -239,21 +239,6 @@ fn parse_annotations(source: &str) -> Vec<AnnotationDoc> {
         .collect()
 }
 
-/// Resolve the path to a script file given the project directory and the
-/// function's filename (a basename like `"Foo.m1scr"`).
-///
-/// Strategy: try `project_dir/filename` first. If that is missing, fall back to
-/// a recursive walk of `project_dir` looking for the first file whose basename
-/// matches.
-fn resolve_script(project_dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
-    let direct = project_dir.join(filename);
-    if direct.is_file() {
-        return Some(direct);
-    }
-    // Recursive fallback: walk the project directory tree.
-    find_file_in_dir(project_dir, filename)
-}
-
 /// The script's path relative to the project directory, forward-slashed for a
 /// stable URL/link (e.g. `Engine/Update.m1scr`). Falls back to the file's base
 /// name when it lies outside the project tree (#30).
@@ -265,40 +250,39 @@ fn relative_source_path(project_dir: &std::path::Path, script_path: &std::path::
         .join("/")
 }
 
-/// Recursively search `dir` for the first file whose base name matches `name`.
-fn find_file_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file_in_dir(&path, name) {
-                return Some(found);
-            }
-        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
-            return Some(path);
-        }
-    }
-    None
+/// A `.m1scr` file read off disk: its base name, its lossy-decoded source, and
+/// the on-disk path it was read from. Collected once by [`collect_scripts`] so
+/// the per-function pass can reuse both the source and the path without a second
+/// `fs::read` or a recursive `find_file_in_dir` walk.
+struct CollectedScript {
+    name: String,
+    source: String,
+    path: std::path::PathBuf,
 }
 
-/// Collect every `.m1scr` file under `dir` (recursively) as `(basename, source)`
-/// pairs suitable for passing to `m1_typecheck::parsed::parse_all`. The source is
-/// read with lossy UTF-8 decoding to handle Windows-1252 encoded files without
+/// Collect every `.m1scr` file under `dir` (recursively). Files in a directory
+/// are visited before its subdirectories, so a script directly under `dir`
+/// precedes a same-named one nested deeper — matching the "direct first, then
+/// recursive walk" preference of the old `resolve_script`. The source is read
+/// with lossy UTF-8 decoding to handle Windows-1252 encoded files without
 /// aborting the entire collection.
-fn collect_scripts(dir: &std::path::Path) -> Vec<(String, String)> {
+fn collect_scripts(dir: &std::path::Path) -> Vec<CollectedScript> {
     let mut out = Vec::new();
     collect_scripts_rec(dir, &mut out);
     out
 }
 
-fn collect_scripts_rec(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+fn collect_scripts_rec(dir: &std::path::Path, out: &mut Vec<CollectedScript>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    // Visit files before recursing so a shallower script wins a base-name
+    // collision over a deeper one (see `script_by_name`).
+    let mut subdirs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_scripts_rec(&path, out);
+            subdirs.push(path);
         } else if path.extension().and_then(|e| e.to_str()) == Some("m1scr") {
             let Some(name) = path
                 .file_name()
@@ -309,9 +293,26 @@ fn collect_scripts_rec(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
             };
             let bytes = std::fs::read(&path).unwrap_or_default();
             let source = String::from_utf8_lossy(&bytes).into_owned();
-            out.push((name, source));
+            out.push(CollectedScript { name, source, path });
         }
     }
+    for sub in subdirs {
+        collect_scripts_rec(&sub, out);
+    }
+}
+
+/// Index the collected scripts by base name, first-wins. Because
+/// [`collect_scripts`] visits a directory's files before its subdirectories, a
+/// script directly under the project dir shadows a deeper same-named one — the
+/// behaviour the old `resolve_script` (`project_dir/filename` first, then a
+/// recursive first-match walk) produced. The map borrows each script so the
+/// per-function pass reuses the already-read source and path with no extra I/O.
+fn script_by_name(scripts: &[CollectedScript]) -> BTreeMap<&str, &CollectedScript> {
+    let mut map: BTreeMap<&str, &CollectedScript> = BTreeMap::new();
+    for s in scripts {
+        map.entry(s.name.as_str()).or_insert(s);
+    }
+    map
 }
 
 /// Load a project file and build its documentation model. Keeps all
@@ -328,7 +329,13 @@ pub fn load(
     let project_dir = project_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let script_pairs = collect_scripts(project_dir);
+    let scripts = collect_scripts(project_dir);
+    // `parse_all` wants `(basename, source)` pairs; build them from the scripts
+    // we already read into memory rather than reading the files a second time.
+    let script_pairs: Vec<(String, String)> = scripts
+        .iter()
+        .map(|s| (s.name.clone(), s.source.clone()))
+        .collect();
     let parsed = m1_typecheck::parsed::parse_all(&script_pairs);
     project.infer_return_types(&parsed);
 
@@ -359,21 +366,24 @@ pub fn load(
         return Ok(model);
     }
 
+    // Reuse the scripts already read into memory (keyed by base name) instead of
+    // re-walking the tree and re-reading each file per function. The source and
+    // its on-disk path are both in hand from `collect_scripts`.
+    let by_name = script_by_name(&scripts);
+
     for group in &mut model.groups {
         for func in &mut group.functions {
             let Some(filename) = path_to_filename.get(&func.path) else {
                 continue;
             };
-            let Some(script_path) = resolve_script(project_dir, filename) else {
+            let Some(script) = by_name.get(filename.as_str()) else {
                 continue;
             };
-            let bytes = std::fs::read(&script_path).unwrap_or_default();
-            let source = String::from_utf8_lossy(&bytes);
-            func.annotations = parse_annotations(&source);
+            func.annotations = parse_annotations(&script.source);
             // Retain the source link + body (#30): the project-relative path for
             // a source link, and the text so `--include-source` can embed it.
-            func.source_path = Some(relative_source_path(project_dir, &script_path));
-            func.source_text = Some(source.into_owned());
+            func.source_path = Some(relative_source_path(project_dir, &script.path));
+            func.source_text = Some(script.source.clone());
         }
     }
 
@@ -911,6 +921,101 @@ mod tests {
             Some("Out = In.Speed * 2;\n"),
             "source body not retained; got {:?}",
             f.source_text
+        );
+    }
+
+    /// `script_by_name` indexes collected scripts first-wins, and
+    /// `collect_scripts` visits a directory's files before recursing — so a
+    /// script directly under the project dir shadows a same-named one nested
+    /// deeper. This preserves the old `resolve_script` precedence
+    /// (`project_dir/filename` first, then a recursive first-match walk) now
+    /// that the per-function pass resolves filenames through the in-memory map
+    /// instead of re-walking the tree. Without files-before-subdirs ordering the
+    /// nested copy could win and the body/source-link would point at the wrong
+    /// file.
+    #[test]
+    fn collected_script_lookup_prefers_a_shallower_same_named_file() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("Nested");
+        fs::create_dir_all(&nested).unwrap();
+        // Same base name in the project root and a subdirectory.
+        fs::write(dir.path().join("Dup.m1scr"), "// root\n").unwrap();
+        fs::write(nested.join("Dup.m1scr"), "// nested\n").unwrap();
+
+        let scripts = collect_scripts(dir.path());
+        let by_name = script_by_name(&scripts);
+        let chosen = by_name.get("Dup.m1scr").expect("Dup.m1scr collected");
+        assert_eq!(
+            chosen.source, "// root\n",
+            "the shallower (project-root) file must win the base-name collision; got {:?}",
+            chosen.source
+        );
+        assert_eq!(
+            chosen.path,
+            dir.path().join("Dup.m1scr"),
+            "the winning script must carry the root path, not the nested one"
+        );
+    }
+
+    /// End-to-end guard for the refactor: a function whose `.m1scr` lives in a
+    /// subdirectory must still get its annotations, source path and body — proving
+    /// the in-memory `script_by_name` lookup resolves a nested filename the way
+    /// the removed recursive `resolve_script` walk used to, with no second read.
+    #[test]
+    fn nested_script_resolved_via_collected_map() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let prj_path = dir.path().join("Project.m1prj");
+        let scripts = dir.path().join("Scripts").join("Engine");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(
+            &prj_path,
+            r#"<?xml version="1.0"?>
+<MoTeCM1BuildSession>
+ <Project Name="Demo" TargetHardware="ecu120">
+  <ComponentStream><List>
+   <Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+   <Component Classname="BuiltIn.FuncUser" Filename="Update.m1scr" Name="Root.Engine.Update"/>
+  </List></ComponentStream>
+ </Project>
+</MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+        fs::write(
+            scripts.join("Update.m1scr"),
+            "// @m1:requires-finite\nOut = In.Speed * 2;\n",
+        )
+        .unwrap();
+
+        let model = load(&prj_path, "T".into()).unwrap();
+        let f = &model
+            .groups
+            .iter()
+            .find(|g| g.path == "Root.Engine")
+            .expect("Root.Engine group")
+            .functions[0];
+        assert_eq!(
+            f.source_path.as_deref(),
+            Some("Scripts/Engine/Update.m1scr"),
+            "nested source path must be found via the in-memory map; got {:?}",
+            f.source_path
+        );
+        assert_eq!(
+            f.source_text.as_deref(),
+            Some("// @m1:requires-finite\nOut = In.Speed * 2;\n"),
+            "nested source body must be retained; got {:?}",
+            f.source_text
+        );
+        assert_eq!(
+            f.annotations.len(),
+            1,
+            "annotation from the nested script must be surfaced; got {:?}",
+            f.annotations
         );
     }
 
