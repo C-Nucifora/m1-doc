@@ -103,6 +103,40 @@ pub(crate) fn format_rate(hz: Option<f64>) -> String {
     }
 }
 
+/// Percent-encode a project-relative path for use as a URL target, preserving
+/// the `/` segment separators. M1 object names may contain spaces (Development
+/// Manual, *Naming Objects*: "Space may be used between two name constituents"),
+/// so the on-disk path — and thus a `{base}/{path}` link — can contain spaces
+/// and other URL-unsafe characters that browsers/Markdown renderers truncate or
+/// mangle. Only the URL target is encoded; the visible link *text* keeps the
+/// raw, human-readable path.
+///
+/// Each `/`-delimited segment is encoded independently: every byte outside the
+/// unreserved set (`A–Z a–z 0–9 - . _ ~`) becomes `%XX`. The `/` separators are
+/// emitted verbatim so the path structure (and GitHub line anchors) survive.
+fn url_encode_path(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(path.len());
+    for (i, segment) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        for &byte in segment.as_bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    out.push(byte as char);
+                }
+                _ => {
+                    out.push('%');
+                    out.push(HEX[(byte >> 4) as usize] as char);
+                    out.push(HEX[(byte & 0xf) as usize] as char);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Build a function's Source line. With a `source_base` the path becomes an
 /// external link (`{base}/{path}`); without one it is shown verbatim so the
 /// reader still sees which `.m1scr` implements the function (#30).
@@ -110,7 +144,7 @@ fn source_line(path: &str, base: Option<&str>) -> String {
     match base {
         Some(b) => {
             let b = b.trim_end_matches('/');
-            format!("**Source:** [{path}]({b}/{path})\n")
+            format!("**Source:** [{path}]({b}/{})\n", url_encode_path(path))
         }
         None => format!("**Source:** `{path}`\n"),
     }
@@ -139,7 +173,11 @@ impl<'a> SourceLinker<'a> {
         let base = self.base.as_deref()?;
         let path = self.m1prj_path?;
         let line = def_line?;
-        Some(format!("[src]({base}/{path}#L{})", line + 1))
+        Some(format!(
+            "[src]({base}/{}#L{})",
+            url_encode_path(path),
+            line + 1
+        ))
     }
 
     /// The `link` rendered as a leading ` ` + the link, ready to append to a
@@ -2134,6 +2172,33 @@ mod tests {
     }
 
     #[test]
+    fn function_source_link_url_encodes_spaces_keeps_text_readable() {
+        // M1 object names may contain spaces (Development Manual, Naming
+        // Objects). The on-disk source path therefore can too — the URL target
+        // must be percent-encoded so the link is valid, while the visible link
+        // text stays the human-readable raw path.
+        let mut f = fn_with_source();
+        f.source_path = Some("Control.Power Limit.Reset Integral Error.m1scr".into());
+        let opts = RenderOptions {
+            source_base: Some("https://example/blob/main".into()),
+            ..Default::default()
+        };
+        let out = render_function(&f, &opts);
+        // URL target: spaces encoded, '/' separators preserved.
+        assert!(
+            out.contains(
+                "(https://example/blob/main/Control.Power%20Limit.Reset%20Integral%20Error.m1scr)"
+            ),
+            "source link URL must percent-encode spaces; got:\n{out}"
+        );
+        // Visible link text stays the raw, readable path.
+        assert!(
+            out.contains("[Control.Power Limit.Reset Integral Error.m1scr]"),
+            "link text must stay human-readable; got:\n{out}"
+        );
+    }
+
+    #[test]
     fn include_source_embeds_collapsible_body() {
         let opts = RenderOptions {
             source_base: None,
@@ -2462,6 +2527,27 @@ mod tests {
             page.body
                 .contains("[src](https://example/blob/main/Project.m1prj#L42)"),
             "symbol row must deep-link its declaration; got:\n{}",
+            page.body
+        );
+    }
+
+    #[test]
+    fn declaration_src_link_url_encodes_spaces_in_m1prj_path() {
+        // A project under a directory with a space yields an m1prj path with a
+        // space; the `[src]` URL must percent-encode it (the link has no
+        // visible text to keep readable — it's a fixed `src` label).
+        let mut model = source_link_model();
+        model.m1prj_path = Some("Vehicle Configs/Project.m1prj".into());
+        let opts = RenderOptions {
+            source_base: Some("https://example/blob/main".into()),
+            ..Default::default()
+        };
+        let files = render_with(&model, &opts);
+        let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
+        assert!(
+            page.body
+                .contains("[src](https://example/blob/main/Vehicle%20Configs/Project.m1prj#L42)"),
+            "declaration src link must percent-encode spaces; got:\n{}",
             page.body
         );
     }
