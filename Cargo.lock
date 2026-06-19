@@ -321,8 +321,8 @@ dependencies = [
 
 [[package]]
 name = "m1-typecheck"
-version = "0.41.0"
-source = "git+https://github.com/C-Nucifora/m1-typecheck.git?tag=v0.41.0#10272a77d56bede7c1bc0634f4cc64c22e2b9337"
+version = "0.42.0"
+source = "git+https://github.com/C-Nucifora/m1-typecheck.git?tag=v0.42.0#da879e47174f2b7224f11c8b22c4ad62c45e5117"
 dependencies = [
  "clap",
  "m1-core",
