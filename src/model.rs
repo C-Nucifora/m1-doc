@@ -679,6 +679,25 @@ impl DocModel {
             .filter_map(|s| s.enum_ref.as_deref())
             .collect();
         self.enums.retain(|e| used.contains(e.name.as_str()));
+        // 4. Prune the relationship graph to the retained node set. Without this
+        //    a scoped run ships every edge — leaking scoped-out symbol paths
+        //    verbatim through `graph.edges` (JSON) and the `## Relationships`
+        //    diagrams (HTML/Markdown). An edge survives only when *both*
+        //    endpoints are still documented: groups, the surviving symbols, and
+        //    references (functions/tables/objects were dropped in step 1, so
+        //    their call/read/write edges fall away here).
+        let nodes: BTreeSet<&str> = self
+            .groups
+            .iter()
+            .flat_map(|g| {
+                std::iter::once(g.path.as_str())
+                    .chain(g.symbols.iter().map(|s| s.path.as_str()))
+                    .chain(g.references.iter().map(|r| r.path.as_str()))
+            })
+            .collect();
+        self.graph
+            .edges
+            .retain(|e| nodes.contains(e.from.as_str()) && nodes.contains(e.to.as_str()));
     }
 
     /// Every documented entity that carries a `<page>#<anchor>` deep link, in

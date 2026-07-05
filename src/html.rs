@@ -317,14 +317,14 @@ function initToc(){
   });
   det.appendChild(ul);slot.appendChild(det);
 }
-// ---- client-side search over the inline index ----
+// ---- client-side search over the shared index ----
 function initSearch(){
   var box=document.getElementById("search-box");
   var results=document.getElementById("search-results");
-  var dataEl=document.getElementById("search-index");
-  if(!box||!results||!dataEl)return;
-  var index=[];
-  try{index=JSON.parse(dataEl.textContent||"[]");}catch(e){index=[];}
+  if(!box||!results)return;
+  // The index is one shared sibling file (search-index.js) loaded before this
+  // script, so it is parsed once per project rather than inlined per page.
+  var index=window.__M1_SEARCH_INDEX__||[];
   function esc(s){return (s||"").replace(/[&<>]/g,function(c){
     return c==="&"?"&amp;":c==="<"?"&lt;":"&gt;";});}
   function render(q){
@@ -891,14 +891,22 @@ fn build_filters(model: &DocModel) -> String {
     f
 }
 
-/// The inline search-index script element. The index JSON sits in a
-/// non-executing `<script type="application/json">` so the browser does not try
-/// to run it; the behaviour script reads it by id. Self-contained — no fetch.
-fn build_search_index_el(model: &DocModel) -> String {
-    format!(
-        "<script id=\"search-index\" type=\"application/json\">{}</script>",
-        search_index_json(model)
-    )
+/// Filename of the shared search-index sidecar (#31). One per project, loaded by
+/// every page via a plain `<script src>` — which works from `file://`, keeping
+/// the self-contained guarantee — instead of inlining the whole index into each
+/// page (that was O(pages × project): 274 MB on EV-M1).
+const SEARCH_INDEX_FILE: &str = "search-index.js";
+
+/// The `<script src>` reference every page uses to load the shared index. It
+/// must precede the behaviour script, which reads `window.__M1_SEARCH_INDEX__`.
+fn search_index_ref() -> String {
+    format!("<script src=\"{SEARCH_INDEX_FILE}\"></script>")
+}
+
+/// The body of the shared [`SEARCH_INDEX_FILE`]: assigns the index array to a
+/// global the behaviour script reads. Emitted once for the whole project.
+fn build_search_index_file(model: &DocModel) -> String {
+    format!("window.__M1_SEARCH_INDEX__={};\n", search_index_json(model))
 }
 
 // ---------------------------------------------------------------------------
@@ -916,10 +924,12 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
     let nav = build_nav(model);
     let toolbar = build_toolbar();
     let filters = build_filters(model);
-    let search_index = build_search_index_el(model);
+    // The search index is one shared sibling file loaded via `<script src>`, so
+    // every page carries only a tiny reference to it, not the whole index (#31).
+    let search_index = search_index_ref();
     // Node → page-link map for the interactive relationship graphs (#37).
     let graph_hrefs = node_hrefs(model);
-    markdown_files
+    let mut out: Vec<RenderedFile> = markdown_files
         .iter()
         .map(|f| {
             // 1. Convert Markdown → HTML fragment (tables enabled).
@@ -943,9 +953,10 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
             let filter_panel = if is_group_page { filters.as_str() } else { "" };
 
             // 3. Wrap in full page. The toolbar (search + theme + menu + TOC
-            // slot) sits at the top of <main>; the inline search index and the
-            // behaviour script are appended before </body>. Everything is
-            // inline — no external asset, so the page is self-contained (#31/#33).
+            // slot) sits at the top of <main>; the shared search-index sidecar
+            // and the behaviour script are appended before </body>. The only
+            // asset is a same-directory `<script src>`, which loads from
+            // `file://` — so the site stays self-contained (#31/#33).
             let page = format!(
                 "<!doctype html>\
 <html lang=\"en\">\
@@ -979,7 +990,14 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
                 body: page,
             }
         })
-        .collect()
+        .collect();
+    // One shared search index for the whole project, emitted once as a sibling
+    // of the pages that reference it.
+    out.push(RenderedFile {
+        path: SEARCH_INDEX_FILE.to_string(),
+        body: build_search_index_file(model),
+    });
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,14 +1225,14 @@ mod tests {
         );
     }
 
-    // (d) Every output path ends in .html.
+    // (d) Every output path is a page (.html) or the shared search-index sidecar.
     #[test]
     fn all_output_paths_end_in_html() {
         let files = render_html(&demo_model());
         for f in &files {
             assert!(
-                f.path.ends_with(".html"),
-                "expected .html path, got: {}",
+                f.path.ends_with(".html") || f.path == SEARCH_INDEX_FILE,
+                "expected .html path or the shared index, got: {}",
                 f.path
             );
         }
@@ -1313,15 +1331,41 @@ mod tests {
         );
     }
 
+    // #31: the search index is a single shared sibling file, referenced (not
+    // inlined) by every page, so a large project no longer pays O(pages ×
+    // project) HTML. The file loads via a plain `<script src>` that works from
+    // `file://`, keeping the site self-contained.
     #[test]
-    fn search_index_is_embedded_inline_and_wired() {
+    fn search_index_is_shared_sibling_file_and_wired() {
         let files = render_html(&rich_model());
-        let index = files.iter().find(|f| f.path == "index.html").unwrap();
+        // Exactly one shared index file is emitted, assigning the global the
+        // behaviour script reads.
+        let idx = files
+            .iter()
+            .filter(|f| f.path == "search-index.js")
+            .collect::<Vec<_>>();
+        assert_eq!(idx.len(), 1, "expected exactly one shared search-index.js");
         assert!(
-            index.body.contains("id=\"search-index\"")
-                && index.body.contains("type=\"application/json\""),
-            "inline search index element missing"
+            idx[0].body.contains("window.__M1_SEARCH_INDEX__="),
+            "shared index must assign the global; got:\n{}",
+            idx[0].body
         );
+        // Every page references it via <script src> and no page inlines the
+        // whole index as an application/json element any more.
+        for f in files.iter().filter(|f| f.path.ends_with(".html")) {
+            assert!(
+                f.body.contains("<script src=\"search-index.js\">"),
+                "page {} must reference the shared index",
+                f.path
+            );
+            assert!(
+                !f.body.contains("type=\"application/json\">[")
+                    && !f.body.contains("id=\"search-index\""),
+                "page {} must not inline the search index",
+                f.path
+            );
+        }
+        let index = files.iter().find(|f| f.path == "index.html").unwrap();
         assert!(
             index.body.contains("id=\"search-box\""),
             "search box missing from the shell"

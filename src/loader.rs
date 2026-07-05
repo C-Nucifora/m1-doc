@@ -291,8 +291,11 @@ fn collect_scripts_rec(dir: &std::path::Path, out: &mut Vec<CollectedScript>) {
             else {
                 continue;
             };
-            let bytes = std::fs::read(&path).unwrap_or_default();
-            let source = String::from_utf8_lossy(&bytes).into_owned();
+            // MoTeC writes `.m1scr` in Windows-1252 for non-ASCII bytes, so a
+            // raw UTF-8 read mojibakes a `°`/`µ`. Use the shared tolerant decode
+            // (the same one the rest of the toolchain reads MoTeC text with); an
+            // unreadable file degrades to empty rather than aborting the run.
+            let source = m1_workspace::read_text(&path).unwrap_or_default();
             out.push(CollectedScript { name, source, path });
         }
     }
@@ -448,7 +451,10 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
     // Resolve each reference's verbatim target to a documented symbol path (#29),
     // keeping the resolution only when it actually names a symbol we document —
     // otherwise the raw string is shown (degrade, never a dangling link). Done
-    // once the whole symbol set is known.
+    // once the whole symbol set is known. A `BuiltIn.Reference` target may name
+    // an implicit accessor child (`.Value`, `.Resource`, …) of a documented
+    // symbol, so the resolved path is matched against the nearest documented
+    // symbol on its own path — not just an exact hit.
     let symbol_paths: std::collections::HashSet<String> = groups
         .values()
         .flat_map(|g| g.symbols.iter().map(|s| s.path.clone()))
@@ -456,7 +462,7 @@ pub fn build_model(project: &Project, title: String) -> DocModel {
     for g in groups.values_mut() {
         for r in &mut g.references {
             r.target_resolved = resolve_reference_target(&r.path, &r.target_raw)
-                .filter(|p| symbol_paths.contains(p));
+                .and_then(|abs| nearest_symbol(&abs, &symbol_paths));
         }
     }
     // Wire each node into its parent's `children` list.
@@ -590,28 +596,77 @@ fn reference_doc(sym: &Symbol) -> ReferenceDoc {
     }
 }
 
-/// Resolve a reference's verbatim `<Props Target>` to a canonical symbol path
-/// when it uses an M1 path keyword (#29). `This` is the reference's enclosing
-/// group, `Parent` that group's parent, and `Root.…` is absolute. A bare or
-/// unrecognised target returns `None` — we never guess, so the renderer shows
-/// the raw string instead of a possibly-wrong link.
+/// Resolve a reference's verbatim `<Props Target>` to its absolute component
+/// path when it uses an M1 path keyword (#29). In a `BuiltIn.Reference` the
+/// `Target` is anchored on the reference component *itself*: `This` is the
+/// reference's own path (so `This.Value` on `Root.X.Filter` is
+/// `Root.X.Filter.Value`), each leading `Parent` climbs one enclosing group
+/// from it (`Parent.Parent.Y` chains), and `Root.…` is absolute. A bare,
+/// non-keyword target is treated as an absolute path. Returns `None` only when a
+/// `Parent` chain climbs past the root.
 fn resolve_reference_target(reference_path: &str, target: &str) -> Option<String> {
-    let this = parent_group(reference_path); // the reference's enclosing group
-    if target == "Root" || target.starts_with("Root.") {
-        Some(target.to_string())
-    } else if let Some(rest) = target.strip_prefix("This.") {
-        (!this.is_empty()).then(|| format!("{this}.{rest}"))
-    } else if target == "This" {
-        (!this.is_empty()).then(|| this.to_string())
-    } else if let Some(rest) = target.strip_prefix("Parent.") {
-        let parent = parent_group(this);
-        (!parent.is_empty()).then(|| format!("{parent}.{rest}"))
-    } else if target == "Parent" {
-        let parent = parent_group(this);
-        (!parent.is_empty()).then(|| parent.to_string())
-    } else {
-        None
+    if target == "This" {
+        return Some(reference_path.to_string());
     }
+    if let Some(rest) = target.strip_prefix("This.") {
+        return Some(format!("{reference_path}.{rest}"));
+    }
+    if target == "Root" || target.starts_with("Root.") {
+        return Some(target.to_string());
+    }
+    if target.starts_with("Parent") {
+        // Count the leading `Parent` / `Parent.` segments, then climb that many
+        // enclosing groups from the reference's own path.
+        let mut rest = target;
+        let mut levels = 0usize;
+        loop {
+            if rest == "Parent" {
+                levels += 1;
+                rest = "";
+                break;
+            }
+            match rest.strip_prefix("Parent.") {
+                Some(r) => {
+                    rest = r;
+                    levels += 1;
+                }
+                None => break,
+            }
+        }
+        let mut base = reference_path.to_string();
+        for _ in 0..levels {
+            let i = base.rfind('.')?;
+            base.truncate(i);
+        }
+        return Some(if rest.is_empty() {
+            base
+        } else if base.is_empty() {
+            rest.to_string()
+        } else {
+            format!("{base}.{rest}")
+        });
+    }
+    // A bare, non-keyword target is an absolute path.
+    Some(target.to_string())
+}
+
+/// The longest prefix of `abs` (including `abs` itself) that is a documented
+/// symbol, or `None` when no prefix is. A `BuiltIn.Reference` target may end in
+/// an implicit accessor child (`.Value`, `.Resource`, …) that is not itself a
+/// listed symbol; the reference still resolves — to the nearest documented
+/// symbol on its path (mirrors m1-typecheck / m1-project's `reference_resolves`).
+fn nearest_symbol(abs: &str, symbols: &std::collections::HashSet<String>) -> Option<String> {
+    if symbols.contains(abs) {
+        return Some(abs.to_string());
+    }
+    let mut p = abs;
+    while let Some((head, _)) = p.rsplit_once('.') {
+        if symbols.contains(head) {
+            return Some(head.to_string());
+        }
+        p = head;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1426,13 +1481,18 @@ mod tests {
     /// invented link).
     #[test]
     fn references_documented_with_resolved_and_raw_targets() {
+        // `This` anchors on the reference component *itself* (the real-corpus
+        // pattern: a `.Filter` reference whose `This.Value` is its own child),
+        // and `Parent.Parent.…` climbs enclosing groups from it.
         const REFS: &str = r#"<?xml version="1.0"?>
 <MoTeCM1BuildSession>
  <Project Name="Demo" TargetHardware="ecu120">
   <ComponentStream><List>
    <Component Classname="BuiltIn.GroupCompound" Name="Root.Sensors"/>
    <Component Classname="BuiltIn.Channel" Name="Root.Sensors.OilP"><Props Type="f32"/></Component>
-   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.AliasThis"><Props Target="This.OilP"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.OilP.Filter"><Props Target="This.Value"/></Component>
+   <Component Classname="BuiltIn.Channel" Name="Root.Sensors.OilP.Filter.Value"><Props Type="f32"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Sensors.OilP.Deep.Ref"><Props Target="Parent.Parent.OilP"/></Component>
    <Component Classname="BuiltIn.Reference" Name="Root.Sensors.AliasAbs"><Props Target="Root.Sensors.OilP"/></Component>
    <Component Classname="BuiltIn.Reference" Name="Root.Sensors.Dangling"><Props Target="Nowhere.X"/></Component>
    <Component Classname="BuiltIn.Reference" Name="Root.Sensors.NoTarget"><Props/></Component>
@@ -1440,20 +1500,31 @@ mod tests {
  </Project>
 </MoTeCM1BuildSession>"#;
         let model = build_model(&Project::from_xml(REFS).unwrap(), "Demo".into());
-        let g = model
-            .groups
-            .iter()
-            .find(|g| g.path == "Root.Sensors")
-            .expect("Root.Sensors group");
-        let by_path = |p: &str| g.references.iter().find(|r| r.path == p).unwrap();
+        let by_path = |p: &str| {
+            model
+                .groups
+                .iter()
+                .flat_map(|g| g.references.iter())
+                .find(|r| r.path == p)
+                .unwrap_or_else(|| panic!("reference {p} not documented"))
+        };
 
-        // `This.OilP` from Root.Sensors.* resolves to the documented sibling.
-        let this = by_path("Root.Sensors.AliasThis");
-        assert_eq!(this.target_raw, "This.OilP");
+        // `This.Value` on the reference resolves to the reference's own child.
+        let this = by_path("Root.Sensors.OilP.Filter");
+        assert_eq!(this.target_raw, "This.Value");
         assert_eq!(
             this.target_resolved.as_deref(),
+            Some("Root.Sensors.OilP.Filter.Value"),
+            "This-relative target must anchor on the reference itself"
+        );
+        // `Parent.Parent.OilP` from `Root.Sensors.OilP.Deep.Ref` climbs two
+        // enclosing groups (→ `Root.Sensors`) then names `OilP`.
+        assert_eq!(
+            by_path("Root.Sensors.OilP.Deep.Ref")
+                .target_resolved
+                .as_deref(),
             Some("Root.Sensors.OilP"),
-            "This-relative target must resolve to the documented symbol"
+            "Parent chaining must climb one group per Parent segment"
         );
         // An absolute `Root.…` target that names a documented symbol resolves too.
         assert_eq!(
@@ -1546,7 +1617,8 @@ mod tests {
    <Component Classname="BuiltIn.Channel" Name="Root.Engine.Output"><Props Type="f32"/></Component>
    <Component Classname="BuiltIn.FuncUser" Filename="Helper.m1scr" Name="Root.Engine.Helper"/>
    <Component Classname="BuiltIn.FuncUser" Filename="Update.m1scr" Name="Root.Engine.Update"/>
-   <Component Classname="BuiltIn.Reference" Name="Root.Engine.Alias"><Props Target="This.Speed"/></Component>
+   <Component Classname="BuiltIn.Reference" Name="Root.Engine.Alias"><Props Target="This.Value"/></Component>
+   <Component Classname="BuiltIn.Channel" Name="Root.Engine.Alias.Value"><Props Type="f32"/></Component>
   </List></ComponentStream>
  </Project>
 </MoTeCM1BuildSession>"#,
@@ -1588,7 +1660,7 @@ mod tests {
         assert!(
             has(
                 "Root.Engine.Alias",
-                "Root.Engine.Speed",
+                "Root.Engine.Alias.Value",
                 EdgeKind::Reference
             ),
             "missing reference edge; got {:?}",
