@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 m1-core = { git = "https://github.com/C-Nucifora/m1-core.git", tag = "v0.15.0" } # used from P2 for @m1: annotations
-m1-typecheck = { git = "https://github.com/C-Nucifora/m1-typecheck.git", tag = "v0.45.0" }
+m1-typecheck = { git = "https://github.com/C-Nucifora/m1-typecheck.git", tag = "v0.45.1" }
 m1-workspace = { git = "https://github.com/nedlane/m1-workspace.git", tag = "v0.13.0" } # Windows-1252-tolerant MoTeC text decode
 pulldown-cmark = "0.13"
 
