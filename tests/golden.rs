@@ -154,3 +154,72 @@ fn golden_enums_page() {
 \n";
     assert_eq!(read(&out, "enums.md"), expected);
 }
+
+/// #73: full-document HTML golden. The two large inline asset constants
+/// (`<style>` CSS and the behaviour `<script>`) are elided to sentinels so the
+/// test pins the *composition seam* the split created — head/title, the nav
+/// tree, the toolbar, the security filter panel, the Markdown→HTML fragment, the
+/// `.md`→`.html` link rewrite, and the shared search-index sidecar — byte-for-byte,
+/// while separately asserting the elided asset blocks are present and non-trivial.
+#[test]
+fn golden_group_page_html_composition() {
+    let out = tempfile::tempdir().unwrap();
+    Command::cargo_bin("m1-doc")
+        .unwrap()
+        .args([
+            "--project",
+            "tests/fixtures/synthetic/Project.m1prj",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--format",
+            "html",
+            "--title",
+            TITLE,
+        ])
+        .assert()
+        .success();
+    let page = read(&out, "Root.Engine.html");
+
+    // The inline assets are deterministic but large; assert they are present and
+    // substantial, then elide them so the golden pins the composed page around them.
+    let style = between(&page, "<style>", "</style>");
+    let script = between(&page, "<script>", "</script>");
+    assert!(style.len() > 500, "inline <style> asset missing/short");
+    assert!(
+        script.len() > 500,
+        "inline behaviour <script> asset missing/short"
+    );
+    let skeleton = page
+        .replacen(style, "STYLE", 1)
+        .replacen(script, "SCRIPT", 1);
+
+    let expected = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synth Fixture</title><style>STYLE</style></head><body><nav><h2>Navigation</h2><a href="index.html">Index</a><a href="enums.html">Enums</a><ul><li><a href="Root.html">Root</a><ul><li><a href="Root.Engine.html">Engine</a><ul><li><a href="Root.Engine.Fuel.html">Fuel</a><ul><li><a href="Root.Engine.Fuel.Pump.html">Pump</a></li></ul></li></ul></li></ul></li></ul></nav><main><div class="toolbar"><button id="menu-toggle" class="btn" title="Toggle navigation">☰</button><input id="search-box" type="search" placeholder="Search symbols, functions, tables…" autocomplete="off"><button id="theme-toggle" class="btn" title="Toggle dark mode">◐</button></div><ul id="search-results"></ul><div id="toc-slot"></div><details id="filters" class="filters"><summary>Filter rows</summary><div><strong>Security</strong> <label><input type="checkbox" data-sec="Tune"> Tune</label></div><div><small>Tick levels/tags to show only matching rows; all unticked shows everything.</small></div></details><p><a href="Root.html">Root</a> › Engine</p>
+<h1>Root.Engine</h1>
+<h2>Sub-groups</h2>
+<ul>
+<li><a href="Root.Engine.Fuel.html">Fuel</a></li>
+</ul>
+<h2>Channels</h2>
+<table><thead><tr><th>Name</th><th>Type</th><th>Quantity</th><th>Unit</th><th>Base</th><th>Log rate</th><th>Security</th></tr></thead><tbody>
+<tr><td><a id="root-engine-speed" class="m1-row-anchor" data-security="Tune"></a><code>Root.Engine.Speed</code></td><td>f32</td><td>AngularVelocity</td><td>rpm</td><td>AngularVelocity</td><td>—</td><td>Tune</td></tr>
+<tr><td><a id="root-engine-state" class="m1-row-anchor"></a><code>Root.Engine.State</code></td><td><a href="enums.html#drive-state">::This.Drive State</a></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+</tbody></table>
+<h2>Constants</h2>
+<table><thead><tr><th>Name</th><th>Type</th><th>Quantity</th><th>Unit</th><th>Base</th><th>Log rate</th><th>Security</th></tr></thead><tbody>
+<tr><td><a id="root-engine-maxrpm" class="m1-row-anchor"></a><code>Root.Engine.MaxRpm</code></td><td>u16</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+</tbody></table>
+<h2>Tables</h2>
+<p><a id="root-engine-ignitionmap"></a></p>
+<h3>Root.Engine.IgnitionMap</h3>
+<p>Table — shape requires a loaded <code>.m1cfg</code></p>
+</main><script src="search-index.js"></script><script>SCRIPT</script></body></html>"#;
+    assert_eq!(skeleton, expected);
+}
+
+/// The content between the first `open` and the following `close`, exclusive —
+/// used to slice out (and later elide) the inline asset blocks.
+fn between<'a>(s: &'a str, open: &str, close: &str) -> &'a str {
+    let start = s.find(open).expect("open tag") + open.len();
+    let end = start + s[start..].find(close).expect("close tag");
+    &s[start..end]
+}
