@@ -1369,15 +1369,17 @@ mod tests {
             .iter()
             .find(|m| m.path == "Bus.EngineData")
             .expect("CAN message must be documented");
-        assert_eq!(msg.can_id, Some(160));
+        // `.m1dbc` integer attributes are hex: CANId "160" is 0x160, StartBit
+        // "24" is 0x24 = 36, Length "16" is 0x16 = 22 (m1-typecheck v0.49.0).
+        assert_eq!(msg.can_id, Some(0x160));
         assert_eq!(msg.dlc, Some(8));
         let sig = msg
             .signals
             .iter()
             .find(|s| s.path == "Bus.EngineData.EngineSpeed")
             .expect("signal must be packed under its message");
-        assert_eq!(sig.start_bit, Some(24));
-        assert_eq!(sig.length, Some(16));
+        assert_eq!(sig.start_bit, Some(0x24));
+        assert_eq!(sig.length, Some(0x16));
         assert_eq!(sig.multiplier, Some(0.5));
         assert_eq!(sig.unit.as_deref(), Some("rpm"));
         assert!(sig.range.is_some(), "u16 signal has a bounded range");
