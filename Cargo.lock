@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "m1-doc"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "assert_cmd",
  "clap",
