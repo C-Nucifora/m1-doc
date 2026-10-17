@@ -331,6 +331,7 @@ pub fn load(
     // `function_doc` can read the populated `return_type` from each symbol.
     let project_dir = project_path
         .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     let scripts = collect_scripts(project_dir);
     // `parse_all` wants `(basename, source)` pairs; build them from the scripts
@@ -537,15 +538,22 @@ fn collect_enums(table: &SymbolTable) -> Vec<EnumDoc> {
     }
     // Keep anchors unique within the Enums page (rare slug collisions get -2…).
     let mut enums: Vec<EnumDoc> = by_name.into_values().collect();
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut used = std::collections::BTreeSet::new();
     for e in &mut enums {
-        let n = counts.entry(e.anchor.clone()).or_insert(0);
-        *n += 1;
-        if *n > 1 {
-            e.anchor = format!("{}-{n}", e.anchor);
-        }
+        e.anchor = unique_anchor(&e.name, &mut used);
     }
     enums
+}
+
+fn unique_anchor(path: &str, used: &mut std::collections::BTreeSet<String>) -> String {
+    let base = anchor_slug(path);
+    let mut anchor = base.clone();
+    let mut suffix = 2;
+    while !used.insert(anchor.clone()) {
+        anchor = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    anchor
 }
 
 /// Assign each symbol and function on a group page a page-unique anchor id.
@@ -553,13 +561,8 @@ fn collect_enums(table: &SymbolTable) -> Vec<EnumDoc> {
 /// page, where an `id` must be unique). Base slugs come from the shared
 /// [`anchor_slug`]; a rare collision gets a deterministic `-2`, `-3`, … suffix.
 fn assign_anchors(group: &mut GroupDoc) {
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-    let mut unique = |path: &str| -> String {
-        let base = anchor_slug(path);
-        let n = counts.entry(base.clone()).or_insert(0);
-        *n += 1;
-        if *n == 1 { base } else { format!("{base}-{n}") }
-    };
+    let mut used = std::collections::BTreeSet::new();
+    let mut unique = |path: &str| unique_anchor(path, &mut used);
     for s in &mut group.symbols {
         s.anchor = unique(&s.path);
     }
