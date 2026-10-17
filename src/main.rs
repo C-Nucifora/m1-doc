@@ -205,34 +205,33 @@ fn main() {
         }
     }
 
-    match args.format {
-        Format::Markdown => {
-            for f in &md_files {
-                write_file(&args.out, f);
-            }
-        }
-        Format::Html => {
-            for f in &html::render(&md_files, &model) {
-                write_file(&args.out, f);
-            }
-        }
+    let files = match args.format {
+        Format::Markdown => md_files,
+        Format::Html => html::render(&md_files, &model),
         Format::Both => {
-            for f in &md_files {
-                write_file(&args.out, f);
-            }
-            for f in &html::render(&md_files, &model) {
-                write_file(&args.out, f);
-            }
+            let mut files = md_files;
+            files.extend(html::render(&files, &model));
+            files
         }
-        Format::Json => {
-            write_file(
-                &args.out,
-                &markdown::RenderedFile {
-                    path: JSON_FILE.to_string(),
-                    body: json::render(&model),
-                },
-            );
+        Format::Json => vec![markdown::RenderedFile {
+            path: JSON_FILE.to_string(),
+            body: json::render(&model),
+        }],
+    };
+    let mut names = std::collections::BTreeSet::new();
+    for file in &files {
+        let mut components = std::path::Path::new(&file.path).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+            || file.path.contains(['/', '\\'])
+            || !names.insert(&file.path)
+        {
+            eprintln!("m1-doc: unsafe or duplicate output filename: {}", file.path);
+            process::exit(1);
         }
+    }
+    for file in &files {
+        write_file(&args.out, file);
     }
 }
 
