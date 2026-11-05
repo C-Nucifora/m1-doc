@@ -64,6 +64,53 @@ pub(crate) fn escape_json_string(s: &str, script_safe: bool) -> String {
     out
 }
 
+/// Append HTML text, escaping quotes too for double-quoted attributes.
+pub(crate) fn html_escape_into(out: &mut String, s: &str, attr: bool) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if attr => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// Percent-encode a project-relative path for use as a URL target, preserving
+/// the `/` segment separators. M1 object names may contain spaces (Development
+/// Manual, *Naming Objects*: "Space may be used between two name constituents"),
+/// so the on-disk path — and thus a `{base}/{path}` link — can contain spaces
+/// and other URL-unsafe characters that browsers/Markdown renderers truncate or
+/// mangle. Only the URL target is encoded; the visible link *text* keeps the
+/// raw, human-readable path.
+///
+/// Each `/`-delimited segment is encoded independently: every byte outside the
+/// unreserved set (`A–Z a–z 0–9 - . _ ~`) becomes `%XX`. The `/` separators are
+/// emitted verbatim so the path structure (and GitHub line anchors) survive.
+pub(crate) fn url_encode_path(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(path.len());
+    for (i, segment) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        for &byte in segment.as_bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    out.push(byte as char);
+                }
+                _ => {
+                    out.push('%');
+                    out.push(HEX[(byte >> 4) as usize] as char);
+                    out.push(HEX[(byte & 0xf) as usize] as char);
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

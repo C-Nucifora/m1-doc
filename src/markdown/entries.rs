@@ -5,8 +5,10 @@
 
 use super::RenderOptions;
 use super::helpers::{
-    ENUMS_FILE, SourceLinker, fmt_f64, format_annotation, format_rate, last_segment, source_line,
+    ENUMS_FILE, SourceLinker, code, fmt_f64, format_annotation, format_rate, last_segment,
+    source_line, text,
 };
+use crate::escape::html_escape_into;
 use crate::model::{CanMessageDoc, FunctionDoc, ObjectDoc, SymbolDoc, SymbolDocKind, TableDoc};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -20,7 +22,7 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
     // Explicit, deterministic anchor (our scheme — not pulldown-cmark's
     // incidental heading slug) so `<group>.md#<anchor>` is stable.
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", f.anchor);
-    let _ = writeln!(out, "### {}\n", f.path);
+    let _ = writeln!(out, "### {}\n", text(&f.path));
     let _ = writeln!(out, "**Call rate:** {}\n", format_rate(f.call_rate_hz));
     if let Some(src) = &f.source_path {
         let _ = writeln!(out, "{}", source_line(src, opts.source_base.as_deref()));
@@ -29,17 +31,17 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
         let _ = writeln!(out, "(no inputs)\n");
     } else {
         for (name, ty) in &f.inputs {
-            let _ = writeln!(out, "- {name}: {ty}");
+            let _ = writeln!(out, "- {}: {}", text(name), text(ty));
         }
         out.push('\n');
     }
     if let Some(rt) = &f.return_type {
-        let _ = writeln!(out, "**Returns:** {rt}\n");
+        let _ = writeln!(out, "**Returns:** {}\n", text(rt));
     }
     if !f.annotations.is_empty() {
         let _ = writeln!(out, "**Annotations:**\n");
         for ann in &f.annotations {
-            let _ = writeln!(out, "- {}", format_annotation(ann));
+            let _ = writeln!(out, "- {}", text(&format_annotation(ann)));
         }
         out.push('\n');
     }
@@ -77,7 +79,7 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
 pub(super) fn render_table(t: &TableDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", t.anchor);
-    let _ = writeln!(out, "### {}{}\n", t.path, links.suffix(t.def_line));
+    let _ = writeln!(out, "### {}{}\n", text(&t.path), links.suffix(t.def_line));
     if t.axes.is_empty() {
         let _ = writeln!(out, "Table — shape requires a loaded `.m1cfg`\n");
     } else {
@@ -85,12 +87,12 @@ pub(super) fn render_table(t: &TableDoc, links: &SourceLinker) -> String {
             .axes
             .iter()
             .map(|a| match &a.unit {
-                Some(u) => format!("{} ({u})", a.size),
+                Some(u) => format!("{} ({})", a.size, text(u)),
                 None => a.size.to_string(),
             })
             .collect::<Vec<_>>()
             .join(" × ");
-        let output = t.output_unit.as_deref().unwrap_or("—");
+        let output = text(t.output_unit.as_deref().unwrap_or("—"));
         let _ = writeln!(out, "{}-D table — {axes} → {output}\n", t.axes.len());
     }
     out
@@ -132,10 +134,14 @@ pub(super) fn section_shows_tags(rows: &[&SymbolDoc]) -> bool {
 pub(super) fn row_anchor(s: &SymbolDoc) -> String {
     let mut attrs = format!(" id=\"{}\" class=\"m1-row-anchor\"", s.anchor);
     if let Some(sec) = &s.security {
-        attrs.push_str(&format!(" data-security=\"{sec}\""));
+        attrs.push_str(" data-security=\"");
+        html_escape_into(&mut attrs, sec, true);
+        attrs.push('"');
     }
     if !s.tags.is_empty() {
-        attrs.push_str(&format!(" data-tags=\"{}\"", s.tags.join(" ")));
+        attrs.push_str(" data-tags=\"");
+        html_escape_into(&mut attrs, &s.tags.join(" "), true);
+        attrs.push('"');
     }
     format!("<a{attrs}></a>")
 }
@@ -145,11 +151,7 @@ pub(super) fn tags_cell(s: &SymbolDoc) -> String {
     if s.tags.is_empty() {
         "—".to_string()
     } else {
-        s.tags
-            .iter()
-            .map(|t| format!("`{t}`"))
-            .collect::<Vec<_>>()
-            .join(" ")
+        s.tags.iter().map(|t| code(t)).collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -172,14 +174,18 @@ fn scale_cell(s: &crate::model::CanSignalDoc) -> String {
 pub(super) fn render_object(o: &ObjectDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "<a id=\"{}\"></a>\n", o.anchor);
-    let _ = writeln!(out, "### {}{}\n", o.path, links.suffix(o.def_line));
-    let _ = writeln!(out, "**Class:** {}\n", o.class.as_deref().unwrap_or("—"));
+    let _ = writeln!(out, "### {}{}\n", text(&o.path), links.suffix(o.def_line));
+    let _ = writeln!(
+        out,
+        "**Class:** {}\n",
+        text(o.class.as_deref().unwrap_or("—"))
+    );
     if o.members.is_empty() {
         let _ = writeln!(out, "(no members)\n");
     } else {
         let _ = writeln!(out, "**Members:**\n");
         for m in &o.members {
-            let _ = writeln!(out, "- `{m}`");
+            let _ = writeln!(out, "- {}", code(m));
         }
         out.push('\n');
     }
@@ -203,7 +209,7 @@ pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> Str
     let _ = writeln!(
         out,
         "### {} (id {id}, dlc {dlc}){}\n",
-        m.path,
+        text(&m.path),
         links.suffix(m.def_line)
     );
     if m.signals.is_empty() {
@@ -224,13 +230,13 @@ pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> Str
         };
         let _ = writeln!(
             out,
-            "| <a id=\"{}\"></a>`{}` | {} | {} | {} | {} |",
+            "| <a id=\"{}\"></a>{} | {} | {} | {} | {} |",
             s.anchor,
-            last_segment(&s.path),
+            code(last_segment(&s.path)),
             bits,
             scale_cell(s),
             range,
-            s.unit.as_deref().unwrap_or("—"),
+            text(s.unit.as_deref().unwrap_or("—")),
         );
     }
     out.push('\n');
@@ -242,9 +248,9 @@ pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> Str
 pub(super) fn type_cell(s: &SymbolDoc, enum_anchors: &HashMap<&str, &str>) -> String {
     match &s.enum_ref {
         Some(name) => match enum_anchors.get(name.as_str()) {
-            Some(anchor) => format!("[{}]({ENUMS_FILE}#{anchor})", s.type_label),
-            None => s.type_label.clone(),
+            Some(anchor) => format!("[{}]({ENUMS_FILE}#{anchor})", text(&s.type_label)),
+            None => text(&s.type_label),
         },
-        None => s.type_label.clone(),
+        None => text(&s.type_label),
     }
 }

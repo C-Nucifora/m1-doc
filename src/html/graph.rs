@@ -101,7 +101,12 @@ pub(super) fn swap_graphs(html: &str, model: &DocModel, hrefs: &HashMap<String, 
         let mut it = spec.splitn(3, ':');
         let mode = it.next().unwrap_or("group");
         let depth: usize = it.next().and_then(|d| d.parse().ok()).unwrap_or(1);
-        let group = it.next().unwrap_or("");
+        let group = it
+            .next()
+            .unwrap_or("")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
         // Advance past the comment, then past the trailing Mermaid <pre> block.
         let mut tail = &after[close + 3..];
         if let Some(ps) = tail.find("<pre>")
@@ -109,7 +114,7 @@ pub(super) fn swap_graphs(html: &str, model: &DocModel, hrefs: &HashMap<String, 
         {
             tail = &tail[ps + pe + "</pre>".len()..];
         }
-        let diagram = diagram_for(model, mode, group, depth);
+        let diagram = diagram_for(model, mode, &group, depth);
         out.push_str(&graph_figure(&diagram, hrefs));
         rest = tail;
     }
