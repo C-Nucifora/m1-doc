@@ -41,3 +41,17 @@ smoke test (P-later) runs over EV-M1 when present (`$M1_CORPUS_PATH`).
 Cut on a `Cargo.toml` version bump landing on `main` (binary repos upload
 per-platform binaries). Depends on m1-core and m1-typecheck at pinned tags — bump
 both together to keep a single m1-core version.
+
+## Agent skills
+
+### Issue tracker
+
+Track work in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.
