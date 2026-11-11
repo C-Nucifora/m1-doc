@@ -47,7 +47,12 @@ fn push_nav_node(
     // on-disk page filename (`<group path>.html` keeps spaces literal too).
     nav.push_str(&format!(
         "<li><a href=\"{}.html\">{}</a>",
-        attr_escape(&g.path),
+        attr_escape(
+            &g.path
+                .replace('%', "%25")
+                .replace('#', "%23")
+                .replace('?', "%3F"),
+        ),
         html_escape(label)
     ));
     if !g.children.is_empty() {
