@@ -8,6 +8,110 @@ const FIXTURE_XML: &str = r#"<?xml version="1.0"?>
 </List></ComponentStream></Project></MoTeCM1BuildSession>"#;
 
 #[test]
+fn relative_project_paths_preserve_script_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("Project.m1prj");
+    std::fs::write(
+        &project,
+        r#"<MoTeCM1BuildSession><Project><ComponentStream><List>
+<Component Classname="BuiltIn.FuncUser" Filename="Update.m1scr" Name="Root.Update"/>
+</List></ComponentStream></Project></MoTeCM1BuildSession>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("Update.m1scr"), "Out = 42;\n").unwrap();
+    let mut expected = None;
+    for path in [
+        project.as_path(),
+        std::path::Path::new("./Project.m1prj"),
+        std::path::Path::new("Project.m1prj"),
+    ] {
+        let out = dir.path().join("docs");
+        Command::cargo_bin("m1-doc")
+            .unwrap()
+            .current_dir(dir.path())
+            .arg("--project")
+            .arg(path)
+            .arg("--out")
+            .arg(&out)
+            .args(["--title", "Demo", "--format", "json"])
+            .assert()
+            .success();
+        let json = std::fs::read_to_string(out.join("m1-doc.json")).unwrap();
+        assert!(json.contains("\"return_type\": \"integer\""), "{json}");
+        assert!(json.contains("\"source_path\": \"Update.m1scr\""), "{json}");
+        if let Some(ref previous) = expected {
+            assert_eq!(&json, previous, "{}", path.display());
+        } else {
+            expected = Some(json);
+        }
+    }
+}
+
+#[test]
+fn unsafe_group_path_cannot_replace_an_external_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let victim = dir.path().join("victim.md");
+    std::fs::write(&victim, "keep").unwrap();
+    let project = dir.path().join("Project.m1prj");
+    let name = dir.path().join("victim.Value").display().to_string();
+    std::fs::write(
+        &project,
+        format!(
+            r#"<Project><ComponentStream><List>
+<Component Classname="BuiltIn.Channel" Name="{name}"><Props Type="f32"/></Component>
+</List></ComponentStream></Project>"#
+        ),
+    )
+    .unwrap();
+    let out = dir.path().join("docs");
+    let result = Command::cargo_bin("m1-doc")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .code(1);
+    assert!(
+        String::from_utf8_lossy(&result.get_output().stderr).contains("unsafe output filename")
+    );
+    assert_eq!(std::fs::read_to_string(victim).unwrap(), "keep");
+    assert!(!out.exists());
+}
+
+#[test]
+fn scoped_rerun_refuses_to_leave_excluded_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("Project.m1prj");
+    std::fs::write(&project, FIXTURE_XML).unwrap();
+    let out = dir.path().join("docs");
+    let run = || {
+        let mut command = Command::cargo_bin("m1-doc").unwrap();
+        command
+            .arg("--project")
+            .arg(&project)
+            .arg("--out")
+            .arg(&out);
+        command
+    };
+    run().assert().success();
+    let old_page = std::fs::read(out.join("Root.Engine.html")).unwrap();
+    std::fs::write(out.join("notes.txt"), "user content").unwrap();
+    let result = run().args(["--only-tag", "absent"]).assert().code(1);
+    assert!(
+        String::from_utf8_lossy(&result.get_output().stderr).contains("empty output directory")
+    );
+    assert_eq!(
+        std::fs::read(out.join("Root.Engine.html")).unwrap(),
+        old_page
+    );
+    assert_eq!(
+        std::fs::read_to_string(out.join("notes.txt")).unwrap(),
+        "user content"
+    );
+}
+
+#[test]
 fn format_both_writes_md_and_html() {
     let dir = tempfile::tempdir().unwrap();
     let prj = dir.path().join("Project.m1prj");

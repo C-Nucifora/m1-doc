@@ -331,6 +331,7 @@ pub fn load(
     // `function_doc` can read the populated `return_type` from each symbol.
     let project_dir = project_path
         .parent()
+        .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     let scripts = collect_scripts(project_dir);
     // `parse_all` wants `(basename, source)` pairs; build them from the scripts
@@ -537,13 +538,9 @@ fn collect_enums(table: &SymbolTable) -> Vec<EnumDoc> {
     }
     // Keep anchors unique within the Enums page (rare slug collisions get -2…).
     let mut enums: Vec<EnumDoc> = by_name.into_values().collect();
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut assigned = std::collections::BTreeSet::new();
     for e in &mut enums {
-        let n = counts.entry(e.anchor.clone()).or_insert(0);
-        *n += 1;
-        if *n > 1 {
-            e.anchor = format!("{}-{n}", e.anchor);
-        }
+        e.anchor = unique_anchor(&e.name, &mut assigned);
     }
     enums
 }
@@ -553,13 +550,8 @@ fn collect_enums(table: &SymbolTable) -> Vec<EnumDoc> {
 /// page, where an `id` must be unique). Base slugs come from the shared
 /// [`anchor_slug`]; a rare collision gets a deterministic `-2`, `-3`, … suffix.
 fn assign_anchors(group: &mut GroupDoc) {
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-    let mut unique = |path: &str| -> String {
-        let base = anchor_slug(path);
-        let n = counts.entry(base.clone()).or_insert(0);
-        *n += 1;
-        if *n == 1 { base } else { format!("{base}-{n}") }
-    };
+    let mut assigned = std::collections::BTreeSet::new();
+    let mut unique = |path: &str| unique_anchor(path, &mut assigned);
     for s in &mut group.symbols {
         s.anchor = unique(&s.path);
     }
@@ -581,6 +573,17 @@ fn assign_anchors(group: &mut GroupDoc) {
     for r in &mut group.references {
         r.anchor = unique(&r.path);
     }
+}
+
+fn unique_anchor(path: &str, assigned: &mut std::collections::BTreeSet<String>) -> String {
+    let base = anchor_slug(path);
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while !assigned.insert(candidate.clone()) {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    candidate
 }
 
 /// Build a [`ReferenceDoc`] from a `SymbolKind::Reference` symbol. The target is
@@ -727,6 +730,63 @@ mod tests {
         all.sort();
         let unique = all.iter().collect::<std::collections::BTreeSet<_>>().len();
         assert_eq!(unique, 3, "anchors must be unique within a page");
+    }
+
+    #[test]
+    fn anchor_suffixes_cannot_collide_with_natural_names() {
+        let mut group = GroupDoc {
+            symbols: vec![
+                SymbolDoc {
+                    path: "Root.Oil Temp".into(),
+                    ..Default::default()
+                },
+                SymbolDoc {
+                    path: "Root.Oil-Temp".into(),
+                    ..Default::default()
+                },
+            ],
+            functions: vec![FunctionDoc {
+                path: "Root.Oil-Temp-2".into(),
+                ..Default::default()
+            }],
+            references: vec![ReferenceDoc {
+                path: "Root.Oil Temp 2".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assign_anchors(&mut group);
+        assert_eq!(group.symbols[0].anchor, "root-oil-temp");
+        assert_eq!(group.symbols[1].anchor, "root-oil-temp-2");
+        assert_eq!(group.functions[0].anchor, "root-oil-temp-2-2");
+        assert_eq!(group.references[0].anchor, "root-oil-temp-2-3");
+
+        let mut assigned = std::collections::BTreeSet::new();
+        assert_eq!(unique_anchor("Oil Temp-2", &mut assigned), "oil-temp-2");
+        assert_eq!(unique_anchor("Oil Temp", &mut assigned), "oil-temp");
+        assert_eq!(unique_anchor("Oil-Temp", &mut assigned), "oil-temp-3");
+    }
+
+    #[test]
+    fn enum_anchor_suffixes_are_unique() {
+        let project = Project::from_xml(
+            r#"<Project><DataTypes>
+<Type Name="Oil Temp" Storage="enum"><Enum Name="Off" ContainerOrder="0"/></Type>
+<Type Name="Oil-Temp" Storage="enum"><Enum Name="Off" ContainerOrder="0"/></Type>
+<Type Name="Oil-Temp-2" Storage="enum"><Enum Name="Off" ContainerOrder="0"/></Type>
+</DataTypes><ComponentStream><List>
+<Component Classname="BuiltIn.Channel" Name="Root.A"><Props Type="::This.Oil Temp"/></Component>
+<Component Classname="BuiltIn.Channel" Name="Root.B"><Props Type="::This.Oil-Temp"/></Component>
+<Component Classname="BuiltIn.Channel" Name="Root.C"><Props Type="::This.Oil-Temp-2"/></Component>
+</List></ComponentStream></Project>"#,
+        )
+        .unwrap();
+        let model = build_model(&project, "Demo".into());
+        assert_eq!(model.enums.len(), 3);
+        let anchors: std::collections::BTreeSet<_> =
+            model.enums.iter().map(|e| e.anchor.as_str()).collect();
+        assert_eq!(anchors.len(), 3);
+        assert!(anchors.contains("oil-temp-2-2"));
     }
 
     #[test]
