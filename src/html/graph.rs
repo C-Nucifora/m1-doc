@@ -81,38 +81,120 @@ relationships{}.</div></figure>",
     )
 }
 
-/// Replace every `<!--m1-graph:mode:depth:group-->` sentinel (and the Mermaid
-/// `<pre>` block pulldown-cmark rendered right after it) with the interactive
-/// graph figure. Other content is untouched.
+/// Decode the renderer-owned `mode:depth:hex-group` marker strictly.
+fn graph_spec(spec: &str) -> Option<(&str, usize, String)> {
+    let mut fields = spec.split(':');
+    let mode = fields.next()?;
+    if !matches!(mode, "group" | "subtree") {
+        return None;
+    }
+    let depth = fields.next()?;
+    if depth.is_empty() || !depth.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let depth = depth.parse().ok()?;
+    let payload = fields.next()?;
+    if fields.next().is_some() || payload.len() % 2 != 0 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = payload
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16)?;
+            let low = (pair[1] as char).to_digit(16)?;
+            Some((high * 16 + low) as u8)
+        })
+        .collect();
+    Some((mode, depth, String::from_utf8(bytes?).ok()?))
+}
+
+/// Replace a valid sentinel and its immediately following Mermaid block.
 pub(super) fn swap_graphs(html: &str, model: &DocModel, hrefs: &HashMap<String, String>) -> String {
     const OPEN: &str = "<!--m1-graph:";
+    const BLOCK: &str = "<pre><code class=\"language-mermaid\">";
+    const END: &str = "</code></pre>";
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(pos) = rest.find(OPEN) {
         out.push_str(&rest[..pos]);
         let after = &rest[pos + OPEN.len()..];
         let Some(close) = after.find("-->") else {
-            // Malformed — emit verbatim and stop scanning.
             out.push_str(&rest[pos..]);
             return out;
         };
-        let spec = &after[..close];
-        // mode:depth:group  (group may contain ':'? paths use '.', so splitn is safe)
-        let mut it = spec.splitn(3, ':');
-        let mode = it.next().unwrap_or("group");
-        let depth: usize = it.next().and_then(|d| d.parse().ok()).unwrap_or(1);
-        let group = it.next().unwrap_or("");
-        // Advance past the comment, then past the trailing Mermaid <pre> block.
-        let mut tail = &after[close + 3..];
-        if let Some(ps) = tail.find("<pre>")
-            && let Some(pe) = tail[ps..].find("</pre>")
+        let tail = &after[close + 3..];
+        let block = tail.trim_start();
+        if let Some((mode, depth, group)) = graph_spec(&after[..close])
+            && let Some(body) = block.strip_prefix(BLOCK)
+            && let Some(end) = body.find(END)
+            && !body[..end].contains('<')
         {
-            tail = &tail[ps + pe + "</pre>".len()..];
+            let diagram = diagram_for(model, mode, &group, depth);
+            out.push_str(&graph_figure(&diagram, hrefs));
+            rest = &body[end + END.len()..];
+        } else {
+            // A malformed pair cannot consume unrelated prose or source code.
+            out.push_str(&rest[pos..pos + OPEN.len() + close + 3]);
+            rest = tail;
         }
-        let diagram = diagram_for(model, mode, group, depth);
-        out.push_str(&graph_figure(&diagram, hrefs));
-        rest = tail;
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_graph_pairs_preserve_unrelated_content() {
+        let valid = "<!--m1-graph:group:1:526f6f74-->";
+        let mermaid = "<pre><code class=\"language-mermaid\">graph LR\n</code></pre>";
+        let incomplete = format!(
+            "{valid}\n<pre><code class=\"language-mermaid\">incomplete\n<pre><code>Keep this</code></pre>"
+        );
+        assert_eq!(
+            swap_graphs(&incomplete, &DocModel::default(), &HashMap::new()),
+            incomplete
+        );
+        for marker in [
+            valid,
+            "<!--m1-graph:bad:1:526f6f74-->",
+            "<!--m1-graph:group:x:526f6f74-->",
+            "<!--m1-graph:group:1:zz-->",
+            "<!--m1-graph:group:1:ff-->",
+            "<!--m1-graph:group:1:5-->",
+            "<!--m1-graph:group:1:52:00-->",
+        ] {
+            let html = format!("{marker}\n<p>Keep this</p>\n{mermaid}");
+            assert_eq!(
+                swap_graphs(&html, &DocModel::default(), &HashMap::new()),
+                html
+            );
+            if marker != valid {
+                let html = format!("{marker}\n{mermaid}");
+                assert_eq!(
+                    swap_graphs(&html, &DocModel::default(), &HashMap::new()),
+                    html
+                );
+            }
+        }
+        for block in [
+            "<pre><code>source</code></pre>",
+            "<pre><code class=\"language-mermaid\">unclosed",
+        ] {
+            let html = format!("{valid}\n{block}");
+            assert_eq!(
+                swap_graphs(&html, &DocModel::default(), &HashMap::new()),
+                html
+            );
+        }
+        let html = format!("{valid}\n{mermaid}<p>After</p>");
+        let swapped = swap_graphs(&html, &DocModel::default(), &HashMap::new());
+        assert_eq!(swapped.matches("<figure").count(), 1);
+        assert!(swapped.ends_with("<p>After</p>"));
+    }
 }

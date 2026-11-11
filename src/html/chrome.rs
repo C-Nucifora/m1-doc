@@ -4,6 +4,7 @@
 //! [`super::escaping`] so M1 names with markup-significant characters stay safe.
 
 use super::escaping::{attr_escape, html_escape};
+use crate::escape::url_encode_path;
 use crate::model::DocModel;
 
 pub(super) fn build_nav(model: &DocModel) -> String {
@@ -41,13 +42,10 @@ fn push_nav_node(
     by_path: &std::collections::BTreeMap<&str, &crate::model::GroupDoc>,
 ) {
     let label = g.path.rsplit('.').next().unwrap_or(&g.path);
-    // M1 names may contain spaces and markup-significant characters, so escape
-    // both the href (attribute context) and the visible label (text context).
-    // `attr_escape` deliberately leaves spaces verbatim so the href matches the
-    // on-disk page filename (`<group path>.html` keeps spaces literal too).
+    // URL-encode filenames before escaping the surrounding HTML attribute.
     nav.push_str(&format!(
-        "<li><a href=\"{}.html\">{}</a>",
-        attr_escape(&g.path),
+        "<li><a href=\"{}\">{}</a>",
+        attr_escape(&url_encode_path(&format!("{}.html", g.path))),
         html_escape(label)
     ));
     if !g.children.is_empty() {
@@ -69,14 +67,18 @@ fn push_nav_node(
 /// list reachable by browsing), so the site degrades rather than breaks.
 pub(super) fn build_toolbar() -> String {
     let mut t = String::from("<div class=\"toolbar\">");
-    t.push_str("<button id=\"menu-toggle\" class=\"btn\" title=\"Toggle navigation\">☰</button>");
     t.push_str(
-        "<input id=\"search-box\" type=\"search\" placeholder=\"Search symbols, functions, tables…\" autocomplete=\"off\">",
+        "<button id=\"m1_menu-toggle\" class=\"btn\" title=\"Toggle navigation\">☰</button>",
     );
-    t.push_str("<button id=\"theme-toggle\" class=\"btn\" title=\"Toggle dark mode\">◐</button>");
+    t.push_str(
+        "<input id=\"m1_search-box\" type=\"search\" placeholder=\"Search symbols, functions, tables…\" autocomplete=\"off\">",
+    );
+    t.push_str(
+        "<button id=\"m1_theme-toggle\" class=\"btn\" title=\"Toggle dark mode\">◐</button>",
+    );
     t.push_str("</div>");
-    t.push_str("<ul id=\"search-results\"></ul>");
-    t.push_str("<div id=\"toc-slot\"></div>");
+    t.push_str("<ul id=\"m1_search-results\"></ul>");
+    t.push_str("<div id=\"m1_toc-slot\"></div>");
     t
 }
 
@@ -92,7 +94,7 @@ pub(super) fn build_filters(model: &DocModel) -> String {
         return String::new();
     }
     let mut f =
-        String::from("<details id=\"filters\" class=\"filters\"><summary>Filter rows</summary>");
+        String::from("<details id=\"m1_filters\" class=\"filters\"><summary>Filter rows</summary>");
     if !levels.is_empty() {
         f.push_str("<div><strong>Security</strong> ");
         for level in &levels {

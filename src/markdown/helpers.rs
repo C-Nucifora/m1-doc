@@ -5,6 +5,7 @@
 //! ([`super::group`], [`super::pages`]) compose them.
 
 use crate::diagram::Diagram;
+use crate::escape::{code_fence, md_code, md_destination, md_text, url_encode_path};
 use crate::model::AnnotationDoc;
 use std::fmt::Write as _;
 
@@ -35,9 +36,13 @@ pub(super) fn render_breadcrumb(path: &str) -> String {
         }
         cumulative.push_str(seg);
         if i + 1 < segs.len() {
-            crumbs.push(format!("[{seg}]({})", group_filename(&cumulative)));
+            crumbs.push(format!(
+                "[{}]({})",
+                md_text(seg),
+                url_encode_path(&group_filename(&cumulative))
+            ));
         } else {
-            crumbs.push((*seg).to_string());
+            crumbs.push(md_text(seg));
         }
     }
     crumbs.join(" › ")
@@ -66,40 +71,6 @@ pub(crate) fn format_rate(hz: Option<f64>) -> String {
     }
 }
 
-/// Percent-encode a project-relative path for use as a URL target, preserving
-/// the `/` segment separators. M1 object names may contain spaces (Development
-/// Manual, *Naming Objects*: "Space may be used between two name constituents"),
-/// so the on-disk path — and thus a `{base}/{path}` link — can contain spaces
-/// and other URL-unsafe characters that browsers/Markdown renderers truncate or
-/// mangle. Only the URL target is encoded; the visible link *text* keeps the
-/// raw, human-readable path.
-///
-/// Each `/`-delimited segment is encoded independently: every byte outside the
-/// unreserved set (`A–Z a–z 0–9 - . _ ~`) becomes `%XX`. The `/` separators are
-/// emitted verbatim so the path structure (and GitHub line anchors) survive.
-pub(super) fn url_encode_path(path: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(path.len());
-    for (i, segment) in path.split('/').enumerate() {
-        if i > 0 {
-            out.push('/');
-        }
-        for &byte in segment.as_bytes() {
-            match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                    out.push(byte as char);
-                }
-                _ => {
-                    out.push('%');
-                    out.push(HEX[(byte >> 4) as usize] as char);
-                    out.push(HEX[(byte & 0xf) as usize] as char);
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Build a function's Source line. With a `source_base` the path becomes an
 /// external link (`{base}/{path}`); without one it is shown verbatim so the
 /// reader still sees which `.m1scr` implements the function (#30).
@@ -107,9 +78,13 @@ pub(super) fn source_line(path: &str, base: Option<&str>) -> String {
     match base {
         Some(b) => {
             let b = b.trim_end_matches('/');
-            format!("**Source:** [{path}]({b}/{})\n", url_encode_path(path))
+            format!(
+                "**Source:** [{}]({})\n",
+                md_text(path),
+                md_destination(&format!("{b}/{}", url_encode_path(path)))
+            )
         }
-        None => format!("**Source:** `{path}`\n"),
+        None => format!("**Source:** {}\n", md_code(path)),
     }
 }
 
@@ -137,9 +112,12 @@ impl<'a> SourceLinker<'a> {
         let path = self.m1prj_path?;
         let line = def_line?;
         Some(format!(
-            "[src]({base}/{}#L{})",
-            url_encode_path(path),
-            line + 1
+            "[src]({})",
+            md_destination(&format!(
+                "{base}/{}#L{}",
+                url_encode_path(path),
+                u64::from(line) + 1
+            ))
         ))
     }
 
@@ -189,8 +167,14 @@ pub(super) fn emit_graph_block(
     depth: usize,
     diagram: &Diagram,
 ) {
-    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{group}-->\n");
-    let _ = writeln!(out, "```mermaid");
-    out.push_str(&diagram.to_mermaid());
-    let _ = writeln!(out, "```\n");
+    let mut payload = String::new();
+    for byte in group.as_bytes() {
+        let _ = write!(payload, "{byte:02x}");
+    }
+    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{payload}-->\n");
+    let body = diagram.to_mermaid();
+    let fence = code_fence(&body);
+    let _ = writeln!(out, "{fence}mermaid");
+    out.push_str(&body);
+    let _ = writeln!(out, "{fence}\n");
 }

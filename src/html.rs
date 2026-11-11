@@ -25,7 +25,7 @@ use assets::{SCRIPT, STYLE};
 use chrome::{build_filters, build_nav, build_toolbar};
 use escaping::html_escape;
 use graph::{node_hrefs, swap_graphs};
-use links::rewrite_md_links;
+use links::rewrite_md_link;
 use search::{SEARCH_INDEX_FILE, build_search_index_file, search_index_ref};
 
 /// Convert a slice of Markdown [`RenderedFile`]s to HTML [`RenderedFile`]s.
@@ -47,24 +47,23 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
     let mut out: Vec<RenderedFile> = markdown_files
         .iter()
         .map(|f| {
-            // 1. Convert Markdown → HTML fragment (tables enabled).
+            // 1. Rewrite parsed link destinations and render HTML (tables enabled).
             let mut fragment = String::new();
             let parser =
                 pulldown_cmark::Parser::new_ext(&f.body, pulldown_cmark::Options::ENABLE_TABLES);
-            pulldown_cmark::html::push_html(&mut fragment, parser);
+            pulldown_cmark::html::push_html(&mut fragment, parser.map(rewrite_md_link));
 
             // 2. Swap relationship-graph sentinels (+ their Mermaid fallback)
             //    for the interactive force-directed widget (#37).
             let fragment = swap_graphs(&fragment, model, &graph_hrefs);
 
-            // 3. Rewrite intra-doc .md links → .html links.
-            let fragment = rewrite_md_links(&fragment);
-
             // The row filter only belongs on a group page (one with filterable
             // rows). The landing/enums/tag-index pages have no `.m1-row-anchor`
             // rows, so the panel would filter nothing — omit it there.
-            let is_group_page =
-                f.path != "index.md" && f.path != "enums.md" && !f.path.starts_with("tag.");
+            let is_group_page = model
+                .groups
+                .iter()
+                .any(|group| f.path == format!("{}.md", group.path));
             let filter_panel = if is_group_page { filters.as_str() } else { "" };
 
             // 3. Wrap in full page. The toolbar (search + theme + menu + TOC
@@ -119,7 +118,6 @@ pub fn render(markdown_files: &[RenderedFile], model: &DocModel) -> Vec<Rendered
 mod tests {
     use super::escaping::{attr_escape, html_escape, html_escape_into};
     use super::graph::node_hrefs;
-    use super::links::rewrite_md_links;
     use super::search::{SEARCH_INDEX_FILE, build_search_entries, search_index_json};
     use super::*;
     use crate::model::{DocModel, GroupDoc, SymbolDoc, SymbolDocKind};
@@ -238,21 +236,19 @@ mod tests {
             !nav.contains("A & B"),
             "nav must not contain a raw, unescaped '&'; got:\n{nav}"
         );
-        // `<` / `>` / `"` from the name must not survive as literal markup.
+        // Angle brackets in the visible label must remain literal text.
         assert!(
             nav.contains("&lt;x&gt;"),
             "nav should escape '<x>' to '&lt;x&gt;'; got:\n{nav}"
         );
         assert!(
-            nav.contains("&quot;q&quot;"),
-            "nav should escape '\"q\"' to '&quot;q&quot;'; got:\n{nav}"
+            nav.contains("&lt;x&gt; \"q\"</a>"),
+            "quotes in the visible label must remain readable; got:\n{nav}"
         );
-        // The href path is escaped consistently with the on-disk filename
-        // (`<group path>.html`, which keeps spaces verbatim), so escaping `&<>"`
-        // but not spaces keeps the link pointing at the actual file.
+        // URL encoding preserves literal filename bytes, including spaces.
         assert!(
-            nav.contains("href=\"Root.A &amp; B &lt;x&gt; &quot;q&quot;.html\""),
-            "nav href should be attribute-escaped to match the page filename; got:\n{nav}"
+            nav.contains("href=\"Root.A%20%26%20B%20%3Cx%3E%20%22q%22.html\""),
+            "nav href should encode the literal page filename; got:\n{nav}"
         );
     }
 
@@ -293,50 +289,6 @@ mod tests {
             index.body.contains("href=\"Root.Engine.html\""),
             "expected href=\"Root.Engine.html\" in nav; got:\n{}",
             &index.body[..index.body.len().min(1000)]
-        );
-    }
-
-    // (c) External http links are NOT rewritten.
-    #[test]
-    fn external_links_not_rewritten() {
-        let html = r#"<a href="https://example.com/doc.md">ext</a>"#;
-        let out = rewrite_md_links(html);
-        assert_eq!(
-            out, html,
-            "external .md link must not be rewritten; got:\n{out}"
-        );
-    }
-
-    // (c-extra) Relative .md links ARE rewritten.
-    #[test]
-    fn relative_md_links_are_rewritten() {
-        let html = r#"<a href="Root.Engine.md">Engine</a>"#;
-        let out = rewrite_md_links(html);
-        assert!(
-            out.contains("href=\"Root.Engine.html\""),
-            "expected .md→.html rewrite; got:\n{out}"
-        );
-    }
-
-    // (e) .md links with a fragment are rewritten; fragment is preserved.
-    #[test]
-    fn md_link_with_fragment_is_rewritten() {
-        let html = r#"<a href="Root.Engine.md#section">Engine</a>"#;
-        let out = rewrite_md_links(html);
-        assert!(
-            out.contains("href=\"Root.Engine.html#section\""),
-            "expected .md#section→.html#section rewrite; got:\n{out}"
-        );
-    }
-
-    // (f) .md links with a query string are rewritten; query is preserved.
-    #[test]
-    fn md_link_with_query_is_rewritten() {
-        let html = r#"<a href="Root.Engine.md?v=1">Engine</a>"#;
-        let out = rewrite_md_links(html);
-        assert!(
-            out.contains("href=\"Root.Engine.html?v=1\""),
-            "expected .md?v=1→.html?v=1 rewrite; got:\n{out}"
         );
     }
 
@@ -482,7 +434,7 @@ mod tests {
         }
         let index = files.iter().find(|f| f.path == "index.html").unwrap();
         assert!(
-            index.body.contains("id=\"search-box\""),
+            index.body.contains("id=\"m1_search-box\""),
             "search box missing from the shell"
         );
     }
@@ -607,12 +559,12 @@ mod tests {
         let files = render_html(&rich_model());
         let page = files.iter().find(|f| f.path == "Root.Engine.html").unwrap();
         assert!(
-            page.body.contains("id=\"theme-toggle\""),
+            page.body.contains("id=\"m1_theme-toggle\""),
             "theme toggle missing"
         );
-        assert!(page.body.contains("id=\"toc-slot\""), "TOC slot missing");
+        assert!(page.body.contains("id=\"m1_toc-slot\""), "TOC slot missing");
         assert!(
-            page.body.contains("id=\"menu-toggle\""),
+            page.body.contains("id=\"m1_menu-toggle\""),
             "menu toggle missing"
         );
         // Dark mode follows prefers-color-scheme in the inline CSS.
@@ -676,7 +628,7 @@ mod tests {
         let files = render_html(&rich_model());
         let page = files.iter().find(|f| f.path == "Root.Engine.html").unwrap();
         assert!(
-            page.body.contains("id=\"filters\""),
+            page.body.contains("id=\"m1_filters\""),
             "filter panel missing from group page"
         );
         assert!(
@@ -691,7 +643,7 @@ mod tests {
         // Rows carry the filter metadata the script reads.
         assert!(
             page.body.contains("data-security=\"Tune\"")
-                && page.body.contains("data-tags=\"engine\""),
+                && page.body.contains("data-tags=\"[&quot;engine&quot;]\""),
             "row filter metadata missing; got:\n{}",
             &page.body[..page.body.len().min(2400)]
         );
@@ -702,7 +654,7 @@ mod tests {
         let files = render_html(&rich_model());
         let index = files.iter().find(|f| f.path == "index.html").unwrap();
         assert!(
-            !index.body.contains("id=\"filters\""),
+            !index.body.contains("id=\"m1_filters\""),
             "the landing page has no filterable rows; it must not carry the panel"
         );
     }
@@ -824,8 +776,7 @@ mod tests {
         );
     }
 
-    // Load-bearing: `attr_escape` must leave spaces verbatim so an href matches
-    // the on-disk page filename (`<group path>.html` keeps spaces literal).
+    // HTML attributes preserve ordinary spaces; URL encoding is separate.
     #[test]
     fn attr_escape_leaves_spaces_verbatim() {
         assert_eq!(attr_escape("Root.A B"), "Root.A B");

@@ -82,15 +82,15 @@ h1:hover .permalink,h2:hover .permalink,h3:hover .permalink{opacity:1}
          color:var(--fg)}
 .btn{padding:.35rem .6rem;border:1px solid var(--border);border-radius:4px;
      background:var(--nav-bg);color:var(--fg);cursor:pointer;font-size:.9rem}
-#search-results{list-style:none;margin:.25rem 0 0;padding:0;
+#m1_search-results{list-style:none;margin:.25rem 0 0;padding:0;
      border:1px solid var(--border);border-radius:4px;max-height:18rem;
      overflow-y:auto;background:var(--bg)}
-#search-results:empty{display:none}
-#search-results li{padding:0}
-#search-results a{display:block;padding:.35rem .6rem;text-decoration:none;
+#m1_search-results:empty{display:none}
+#m1_search-results li{padding:0}
+#m1_search-results a{display:block;padding:.35rem .6rem;text-decoration:none;
      border-bottom:1px solid var(--border)}
-#search-results a:hover{background:var(--nav-bg)}
-#search-results .kind{color:var(--muted);font-size:.8rem;margin-left:.4rem}
+#m1_search-results a:hover{background:var(--nav-bg)}
+#m1_search-results .kind{color:var(--muted);font-size:.8rem;margin-left:.4rem}
 /* Filter panel (security + tags) — a disclosure on group pages. */
 .filters{border:1px solid var(--border);border-radius:4px;padding:.5rem .75rem;
      margin:0 0 1rem}
@@ -218,7 +218,7 @@ function addLink(h){
 }
 // ---- in-page table of contents ----
 function initToc(){
-  var slot=document.getElementById("toc-slot");
+  var slot=document.getElementById("m1_toc-slot");
   if(!slot)return;
   var heads=document.querySelectorAll("main h2[id],main h3[id]");
   if(heads.length<2){return;}
@@ -237,8 +237,8 @@ function initToc(){
 }
 // ---- client-side search over the shared index ----
 function initSearch(){
-  var box=document.getElementById("search-box");
-  var results=document.getElementById("search-results");
+  var box=document.getElementById("m1_search-box");
+  var results=document.getElementById("m1_search-results");
   if(!box||!results)return;
   // The index is one shared sibling file (search-index.js) loaded before this
   // script, so it is parsed once per project rather than inlined per page.
@@ -268,19 +268,19 @@ function initSearch(){
 }
 // ---- security / tag row filters ----
 function initFilters(){
-  var panel=document.getElementById("filters");
+  var panel=document.getElementById("m1_filters");
   if(!panel)return;
   function apply(){
-    var secOn={},tagOn={},anySec=false,anyTag=false;
+    var secOn=Object.create(null),tagOn=Object.create(null),anySec=false,anyTag=false;
     panel.querySelectorAll("input[data-sec]").forEach(function(c){
-      if(c.checked)secOn[c.getAttribute("data-sec")]=true;else anySec=true;});
+      if(c.checked){secOn[c.getAttribute("data-sec")]=true;anySec=true;}});
     panel.querySelectorAll("input[data-tag]").forEach(function(c){
-      if(c.checked)tagOn[c.getAttribute("data-tag")]=true;else anyTag=true;});
+      if(c.checked){tagOn[c.getAttribute("data-tag")]=true;anyTag=true;}});
     document.querySelectorAll("main table tr").forEach(function(tr){
       var a=tr.querySelector("a.m1-row-anchor");
       if(!a)return;
       var sec=a.getAttribute("data-security");
-      var tags=(a.getAttribute("data-tags")||"").split(/\s+/).filter(Boolean);
+      var tags=JSON.parse(a.getAttribute("data-tags")||"[]");
       var okSec=!anySec|| (sec!=null&&secOn[sec]);
       var okTag=!anyTag|| tags.some(function(t){return tagOn[t];});
       if(okSec&&okTag){tr.classList.remove("filtered");}
@@ -330,9 +330,9 @@ function escTok(s){return s.replace(/[&<>]/g,function(c){
   return c==="&"?"&amp;":c==="<"?"&lt;":"&gt;";});}
 // ---- wire up the menu / theme buttons ----
 function initButtons(){
-  var t=document.getElementById("theme-toggle");
+  var t=document.getElementById("m1_theme-toggle");
   if(t)t.addEventListener("click",toggleTheme);
-  var m=document.getElementById("menu-toggle");
+  var m=document.getElementById("m1_menu-toggle");
   if(m)m.addEventListener("click",function(){
     var nav=document.querySelector("nav");if(nav)nav.classList.toggle("collapsed");});
 }
@@ -354,7 +354,7 @@ function buildGraph(fig){
   edges.forEach(function(e){e.a=byId[e.from];e.b=byId[e.to];});
   var nbr={};nodes.forEach(function(n){nbr[n.id]={};});
   edges.forEach(function(e){if(e.a&&e.b){nbr[e.a.id][e.b.id]=1;nbr[e.b.id][e.a.id]=1;}});
-  var hidden={};
+  var hidden=Object.create(null);
   var EC={call:cssVar("--fn","#4078f2"),read:cssVar("--str","#50a14f"),
           write:cssVar("--num","#986801"),reference:cssVar("--muted","#888")};
   function theme(){return{bg:cssVar("--pre-bg","#0f0f1a"),fg:cssVar("--fg","#e0e0e0"),

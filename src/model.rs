@@ -392,8 +392,8 @@ impl AnchoredKind {
 /// yielded by [`DocModel::anchored_entities`]. `path` is the entity's full path
 /// (the enum's name for [`AnchoredKind::Enum`]); `page` is the HTML file it is
 /// documented on (`<group>.html`, or `enums.html` for an enum); `anchor` is its
-/// page-unique anchor. The canonical deep link is `format!("{page}#{anchor}")`,
-/// defined once via [`Self::href`] so no consumer reconstructs it by hand.
+/// page-unique anchor. These fields retain raw identity; [`Self::href`] encodes
+/// the canonical URL so consumers do not reconstruct it by hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchoredEntity<'a> {
     pub kind: AnchoredKind,
@@ -415,7 +415,11 @@ impl AnchoredEntity<'_> {
     /// place the link shape is built, so the search index and the graph
     /// node-href map can never disagree on it again.
     pub fn href(&self) -> String {
-        format!("{}#{}", self.page, self.anchor)
+        format!(
+            "{}#{}",
+            crate::escape::url_encode_path(&self.page),
+            crate::escape::url_encode_path(self.anchor)
+        )
     }
 }
 

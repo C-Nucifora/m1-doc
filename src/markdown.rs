@@ -10,12 +10,14 @@
 //! set of files.
 
 mod entries;
+#[cfg(test)]
+mod escaping_tests;
 mod group;
 mod helpers;
 mod pages;
 
 use crate::model::DocModel;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use group::{build_cross_refs, render_group};
 use helpers::{ENUMS_FILE, SourceLinker, graph_page_filename, group_filename, tag_filename};
@@ -82,9 +84,33 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
             .map(|b| b.trim_end_matches('/').to_string()),
         m1prj_path: model.m1prj_path.as_deref(),
     };
+    // Reserve actual pages before allocating names for tags with lossy slugs.
+    let mut used: HashSet<String> = model
+        .groups
+        .iter()
+        .map(|g| group_filename(&g.path).to_ascii_lowercase())
+        .collect();
+    used.insert("index.md".into());
+    if !model.enums.is_empty() {
+        used.insert(ENUMS_FILE.into());
+    }
+    if let Some(spec) = &opts.graph {
+        used.insert(graph_page_filename(&spec.group).to_ascii_lowercase());
+    }
+    let mut tag_files = BTreeMap::new();
+    for tag in model.tags() {
+        let base = tag_filename(&tag);
+        let mut path = base.clone();
+        let mut suffix = 2;
+        while !used.insert(path.to_ascii_lowercase()) {
+            path = format!("{}-{suffix}.md", base.trim_end_matches(".md"));
+            suffix += 1;
+        }
+        tag_files.insert(tag, path);
+    }
     let mut files = vec![RenderedFile {
         path: "index.md".to_string(),
-        body: render_index(model, opts),
+        body: render_index(model, opts, &tag_files),
     }];
     for g in &model.groups {
         files.push(RenderedFile {
@@ -101,9 +127,9 @@ pub fn render_with(model: &DocModel, opts: &RenderOptions) -> Vec<RenderedFile> 
     }
     // One index page per tag (#34), in sorted tag order so the output is
     // deterministic. Each lists every symbol carrying the tag, deep-linked.
-    for tag in model.tags() {
+    for (tag, path) in tag_files {
         files.push(RenderedFile {
-            path: tag_filename(&tag),
+            path,
             body: render_tag_index(model, &tag),
         });
     }
@@ -1545,7 +1571,8 @@ mod tests {
         let page = files.iter().find(|f| f.path == "Root.Engine.md").unwrap();
         assert!(page.body.contains("## Relationships"));
         assert!(
-            page.body.contains("<!--m1-graph:group:1:Root.Engine-->"),
+            page.body
+                .contains("<!--m1-graph:group:1:526f6f742e456e67696e65-->"),
             "sentinel for the HTML widget missing; got:\n{}",
             page.body
         );
@@ -1580,7 +1607,10 @@ mod tests {
             .find(|f| f.path == "graph.root-engine.md")
             .expect("--graph must emit a subsystem page");
         assert!(page.body.contains("# Subsystem: Root.Engine"));
-        assert!(page.body.contains("<!--m1-graph:subtree:2:Root.Engine-->"));
+        assert!(
+            page.body
+                .contains("<!--m1-graph:subtree:2:526f6f742e456e67696e65-->")
+        );
         let index = files.iter().find(|f| f.path == "index.md").unwrap();
         assert!(
             index
@@ -1723,5 +1753,215 @@ mod tests {
             "row layout must be unchanged without a source link; got:\n{}",
             page.body
         );
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+    use crate::model::{EnumDoc, GroupDoc, SymbolDoc};
+
+    #[test]
+    fn colliding_tags_keep_separate_pages_and_membership() {
+        let tags = ["Fuel-map", "fuel map", "fuel-map", "fuel-map-2"];
+        let model = DocModel {
+            groups: vec![GroupDoc {
+                path: "tag.fuel-map".into(),
+                symbols: tags
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tag)| SymbolDoc {
+                        path: format!("tag.fuel-map.Member{i}"),
+                        anchor: format!("member{i}"),
+                        tags: vec![(*tag).into()],
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let files = render(&model);
+        let again = render(&model);
+        assert_eq!(
+            files.iter().map(|f| (&f.path, &f.body)).collect::<Vec<_>>(),
+            again.iter().map(|f| (&f.path, &f.body)).collect::<Vec<_>>()
+        );
+        let names: HashSet<_> = files.iter().map(|f| f.path.to_ascii_lowercase()).collect();
+        assert_eq!(names.len(), files.len());
+        for (i, tag) in tags.iter().enumerate() {
+            let page = files
+                .iter()
+                .find(|f| f.body.contains(&format!("# Tag: {tag}\n")))
+                .unwrap();
+            assert!(files[0].body.contains(&format!("]({})", page.path)));
+            assert!(page.body.contains(&format!("Member{i}]")));
+            for j in 0..tags.len() {
+                if i != j {
+                    assert!(!page.body.contains(&format!("Member{j}]")));
+                }
+            }
+        }
+        let html = crate::html::render(&files, &model);
+        let group = html.iter().find(|f| f.path == "tag.fuel-map.html").unwrap();
+        assert!(group.body.contains("id=\"m1_filters\""));
+        let directory = tempfile::tempdir().unwrap();
+        crate::output::write(&directory.path().join("markdown"), &files, false).unwrap();
+        crate::output::write(&directory.path().join("html"), &html, false).unwrap();
+        let mut both = files;
+        both.extend(html);
+        crate::output::write(&directory.path().join("both"), &both, false).unwrap();
+    }
+
+    #[test]
+    fn enum_anchors_cannot_collide_with_shell_controls() {
+        let names = [
+            "search-box",
+            "search-results",
+            "theme-toggle",
+            "menu-toggle",
+            "toc-slot",
+            "filters",
+        ];
+        let model = DocModel {
+            enums: names
+                .iter()
+                .map(|name| EnumDoc {
+                    name: (*name).into(),
+                    anchor: crate::model::anchor_slug(name),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let html = crate::html::render(&render(&model), &model);
+        let page = html.iter().find(|f| f.path == "enums.html").unwrap();
+        for name in names {
+            assert_eq!(page.body.matches(&format!("id=\"{name}\"")).count(), 1);
+        }
+        for name in &names[..5] {
+            assert_eq!(page.body.matches(&format!("id=\"m1_{name}\"")).count(), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+    use crate::model::{EdgeKind, GraphEdge, GroupDoc, ReferenceDoc, SymbolDoc};
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+
+    fn decode_path(value: &str) -> String {
+        let mut bytes = Vec::new();
+        let mut remaining = value.as_bytes();
+        while let Some((&byte, tail)) = remaining.split_first() {
+            if byte == b'%' {
+                bytes.push(
+                    u8::from_str_radix(std::str::from_utf8(&tail[..2]).unwrap(), 16).unwrap(),
+                );
+                remaining = &tail[2..];
+            } else {
+                bytes.push(byte);
+                remaining = tail;
+            }
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn internal_urls_resolve_literal_filenames_across_renderers() {
+        let root = "Fuel %20#(é)&";
+        let child = format!("{root}.Child");
+        let symbol = format!("{child}.Speed");
+        let reference = format!("{child}.Alias");
+        let mut model = DocModel {
+            groups: vec![
+                GroupDoc {
+                    path: root.into(),
+                    children: vec![child.clone()],
+                    ..Default::default()
+                },
+                GroupDoc {
+                    path: child.clone(),
+                    symbols: vec![SymbolDoc {
+                        path: symbol.clone(),
+                        anchor: "speed".into(),
+                        tags: vec!["fuel".into()],
+                        ..Default::default()
+                    }],
+                    references: vec![ReferenceDoc {
+                        path: reference.clone(),
+                        anchor: "alias".into(),
+                        target_resolved: Some(symbol.clone()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        model.graph.edges.push(GraphEdge {
+            from: reference,
+            to: symbol,
+            kind: EdgeKind::Read,
+        });
+        let files = render(&model);
+        let mut links = std::collections::HashSet::new();
+        for file in &files {
+            for event in Parser::new_ext(&file.body, Options::ENABLE_TABLES) {
+                if let Event::Start(Tag::Link { dest_url, .. }) = event {
+                    let (path, fragment) = dest_url.split_once('#').unwrap_or((&dest_url, ""));
+                    let target = if path.is_empty() {
+                        &file.path
+                    } else {
+                        &decode_path(path)
+                    };
+                    let page = files
+                        .iter()
+                        .find(|candidate| &candidate.path == target)
+                        .unwrap_or_else(|| panic!("missing {dest_url}"));
+                    if !fragment.is_empty() {
+                        assert!(
+                            page.body
+                                .contains(&format!("id=\"{}\"", decode_path(fragment))),
+                            "{dest_url}"
+                        );
+                    }
+                    links.insert((file.path.clone(), dest_url.to_string()));
+                }
+            }
+        }
+        let root_url = "Fuel%20%2520%23%28%C3%A9%29%26.md";
+        let child_url = "Fuel%20%2520%23%28%C3%A9%29%26.Child.md";
+        for (source, target) in [
+            ("index.md".into(), root_url.into()),
+            (format!("{root}.md"), child_url.into()),
+            (format!("{child}.md"), root_url.into()),
+            ("index.md".into(), "tag.fuel.md".into()),
+            ("tag.fuel.md".into(), format!("{child_url}#speed")),
+            (format!("{child}.md"), format!("{child_url}#speed")),
+            (format!("{child}.md"), format!("{child_url}#alias")),
+            (format!("{child}.md"), "#speed".into()),
+        ] {
+            assert!(
+                links.contains(&(source.clone(), target.clone())),
+                "missing {source} -> {target}"
+            );
+        }
+        let html = crate::html::render(&files, &model);
+        let page = html
+            .iter()
+            .find(|f| f.path == format!("{child}.html"))
+            .unwrap();
+        let encoded = "Fuel%20%2520%23%28%C3%A9%29%26.Child.html";
+        assert!(page.body.contains(&format!("href=\"{encoded}\"")));
+        assert!(page.body.contains(&format!("href=\"{encoded}#speed\"")));
+        assert!(page.body.contains(&format!("\"href\":\"{encoded}#speed\"")));
+        let search = html.iter().find(|f| f.path.ends_with(".js")).unwrap();
+        assert!(search.body.contains(&format!("{encoded}#speed")));
+        let directory = tempfile::tempdir().unwrap();
+        let mut both = files;
+        both.extend(html);
+        crate::output::write(directory.path(), &both, false).unwrap();
     }
 }
