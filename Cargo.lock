@@ -300,8 +300,8 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "m1-core"
-version = "0.15.0"
-source = "git+https://github.com/C-Nucifora/m1-core.git?tag=v0.15.0#1fe6f9ad4d6a0479c5cfeb770270fab0f89e8f89"
+version = "0.15.1"
+source = "git+https://github.com/C-Nucifora/m1-core.git?tag=v0.15.1#e581c96c4c220a2eca1c04b41befc009d8c4264f"
 dependencies = [
  "tree-sitter",
  "tree-sitter-m1",
@@ -309,38 +309,40 @@ dependencies = [
 
 [[package]]
 name = "m1-doc"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "assert_cmd",
  "clap",
  "m1-core",
  "m1-typecheck",
- "m1-workspace 0.14.1",
+ "m1-workspace",
+ "percent-encoding",
  "pulldown-cmark",
  "tempfile",
 ]
 
 [[package]]
-name = "m1-typecheck"
-version = "0.51.0"
-source = "git+https://github.com/C-Nucifora/m1-typecheck.git?tag=v0.51.0#e79bd0e4686cae078b1f96a728f2f94affc3ede4"
+name = "m1-project"
+version = "0.16.0"
+source = "git+https://github.com/nedlane/m1-project.git?tag=v0.16.0#ad3016ce14fda28b43f83997dc7cc3cbf5a9b1fb"
 dependencies = [
  "clap",
- "m1-core",
- "m1-workspace 0.13.0",
+ "m1-workspace",
  "roxmltree",
- "serde",
- "serde_json",
- "toml",
 ]
 
 [[package]]
-name = "m1-workspace"
-version = "0.13.0"
-source = "git+https://github.com/nedlane/m1-workspace.git?tag=v0.13.0#cf1b5b862d255cc4ecb89a7b708016bd9a9f33db"
+name = "m1-typecheck"
+version = "0.52.0"
+source = "git+https://github.com/C-Nucifora/m1-typecheck.git?tag=v0.52.0#d63f2cc39ad04586ae2ad2fcc8e244f24cb6f8d0"
 dependencies = [
+ "clap",
+ "m1-core",
+ "m1-project",
+ "m1-workspace",
+ "roxmltree",
  "serde",
- "serde_ignored",
+ "serde_json",
  "toml",
 ]
 
@@ -371,6 +373,12 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "percent-encoding"
+version = "2.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "predicates"
@@ -692,8 +700,8 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "tree-sitter-m1"
-version = "0.8.0"
-source = "git+https://github.com/C-Nucifora/tree-sitter-m1.git?tag=v0.8.0#e9dbd45be91c0771105637924a2c5c87ae17c1fb"
+version = "0.8.1"
+source = "git+https://github.com/C-Nucifora/tree-sitter-m1.git?tag=v0.8.1#4512305f8efda1c624f4b0867beb35a1fbd666db"
 dependencies = [
  "cc",
  "tree-sitter-language",
