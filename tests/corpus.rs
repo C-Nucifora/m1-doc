@@ -169,9 +169,22 @@ fn linked_group_pages(body: &str) -> Vec<String> {
         let Some(close) = after.find(')') else { break };
         let target = &after[..close];
         if target.ends_with(".md") && !target.contains('#') && target != "enums.md" {
-            out.push(target.to_string());
+            out.push(
+                percent_encoding::percent_decode_str(target)
+                    .decode_utf8()
+                    .expect("group links use UTF-8 filenames")
+                    .into_owned(),
+            );
         }
         rest = &after[close + 1..];
     }
     out
+}
+
+#[test]
+fn group_links_resolve_url_encoded_filenames() {
+    assert_eq!(
+        linked_group_pages("[CAN](Root.CAN%20Bus.md) [percent](Root.100%25.md)"),
+        ["Root.CAN Bus.md", "Root.100%.md"]
+    );
 }
