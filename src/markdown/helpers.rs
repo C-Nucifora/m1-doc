@@ -8,6 +8,36 @@ use crate::diagram::Diagram;
 use crate::model::AnnotationDoc;
 use std::fmt::Write as _;
 
+/// Keep project metadata literal in Markdown text, labels and table cells.
+pub(super) fn text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\\' | '[' | ']' | '*' | '_' | '`' | '|' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' | '\r' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Inline code uses a longer delimiter when metadata itself contains backticks.
+pub(super) fn code(value: &str) -> String {
+    let value = value.replace('|', "\\|").replace(['\n', '\r'], " ");
+    if !value.contains('`') {
+        return format!("`{value}`");
+    }
+    let longest = value.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    format!("{fence} {value} {fence}")
+}
+
 /// The filename of the project-wide Enums reference page.
 pub(super) const ENUMS_FILE: &str = "enums.md";
 
@@ -15,6 +45,11 @@ pub(super) const ENUMS_FILE: &str = "enums.md";
 /// full group path, so every node in the tree has a distinct page).
 pub(super) fn group_filename(group_path: &str) -> String {
     format!("{group_path}.md")
+}
+
+/// URL target for a group page, preserving the on-disk filename separately.
+pub(super) fn group_link(group_path: &str) -> String {
+    url_encode_path(&group_filename(group_path))
 }
 
 /// The leaf segment of a dotted path (`Root.Engine.Fuel` -> `Fuel`) — the label
@@ -35,9 +70,9 @@ pub(super) fn render_breadcrumb(path: &str) -> String {
         }
         cumulative.push_str(seg);
         if i + 1 < segs.len() {
-            crumbs.push(format!("[{seg}]({})", group_filename(&cumulative)));
+            crumbs.push(format!("[{}]({})", text(seg), group_link(&cumulative)));
         } else {
-            crumbs.push((*seg).to_string());
+            crumbs.push(text(seg));
         }
     }
     crumbs.join(" › ")
@@ -66,39 +101,7 @@ pub(crate) fn format_rate(hz: Option<f64>) -> String {
     }
 }
 
-/// Percent-encode a project-relative path for use as a URL target, preserving
-/// the `/` segment separators. M1 object names may contain spaces (Development
-/// Manual, *Naming Objects*: "Space may be used between two name constituents"),
-/// so the on-disk path — and thus a `{base}/{path}` link — can contain spaces
-/// and other URL-unsafe characters that browsers/Markdown renderers truncate or
-/// mangle. Only the URL target is encoded; the visible link *text* keeps the
-/// raw, human-readable path.
-///
-/// Each `/`-delimited segment is encoded independently: every byte outside the
-/// unreserved set (`A–Z a–z 0–9 - . _ ~`) becomes `%XX`. The `/` separators are
-/// emitted verbatim so the path structure (and GitHub line anchors) survive.
-pub(super) fn url_encode_path(path: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(path.len());
-    for (i, segment) in path.split('/').enumerate() {
-        if i > 0 {
-            out.push('/');
-        }
-        for &byte in segment.as_bytes() {
-            match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                    out.push(byte as char);
-                }
-                _ => {
-                    out.push('%');
-                    out.push(HEX[(byte >> 4) as usize] as char);
-                    out.push(HEX[(byte & 0xf) as usize] as char);
-                }
-            }
-        }
-    }
-    out
-}
+pub(super) use crate::escape::url_encode_path;
 
 /// Build a function's Source line. With a `source_base` the path becomes an
 /// external link (`{base}/{path}`); without one it is shown verbatim so the
@@ -107,9 +110,13 @@ pub(super) fn source_line(path: &str, base: Option<&str>) -> String {
     match base {
         Some(b) => {
             let b = b.trim_end_matches('/');
-            format!("**Source:** [{path}]({b}/{})\n", url_encode_path(path))
+            format!(
+                "**Source:** [{}]({b}/{})\n",
+                text(path),
+                url_encode_path(path)
+            )
         }
-        None => format!("**Source:** `{path}`\n"),
+        None => format!("**Source:** {}\n", code(path)),
     }
 }
 
@@ -189,7 +196,9 @@ pub(super) fn emit_graph_block(
     depth: usize,
     diagram: &Diagram,
 ) {
-    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{group}-->\n");
+    let mut escaped_group = String::new();
+    crate::escape::html_escape_into(&mut escaped_group, group, false);
+    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{escaped_group}-->\n");
     let _ = writeln!(out, "```mermaid");
     out.push_str(&diagram.to_mermaid());
     let _ = writeln!(out, "```\n");
