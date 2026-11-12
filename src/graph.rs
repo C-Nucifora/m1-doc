@@ -36,7 +36,10 @@ pub fn build_graph(project: &Project, scripts: &[ParsedScript], model: &DocModel
             fn_symbol: Some(from.clone()),
         };
         for_each_top_path(script.cst.root(), |node, access| {
-            let Resolution::Symbol(sym) = resolve(node.text(), &scope) else {
+            let Some(path) = path_text(node) else {
+                return;
+            };
+            let Resolution::Symbol(sym) = resolve(&path, &scope) else {
                 return; // local / In / Out / library / unresolved → no edge
             };
             if sym.path == from {
@@ -84,6 +87,23 @@ pub fn build_graph(project: &Project, scripts: &[ParsedScript], model: &DocModel
     ProjectGraph {
         edges: edges.into_iter().collect(),
     }
+}
+
+/// Read the path's identifiers without trivia around its member separators.
+fn path_text(root: Node) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            Kind::Identifier => parts.push(node.text()),
+            Kind::MemberExpression => {
+                stack.push(node.child_by_field(Field::Property)?);
+                stack.push(node.child_by_field(Field::Object)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(parts.join("."))
 }
 
 /// Collect every `local` declaration name so the resolver classifies those names
@@ -177,6 +197,55 @@ fn access_of(node: Node, parent: Option<Node>) -> Access {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_edges_ignore_member_trivia_but_preserve_multiword_names() {
+        let project = Project::from_xml(
+            r#"<MoTeCM1BuildSession><Project Name="Demo"><ComponentStream><List>
+<Component Classname="BuiltIn.GroupCompound" Name="Root.Engine"/>
+<Component Classname="BuiltIn.Channel" Name="Root.Engine.Wheel Speed"><Props Type="f32"/></Component>
+<Component Classname="BuiltIn.Channel" Name="Root.Engine.Output"><Props Type="f32"/></Component>
+<Component Classname="BuiltIn.FuncUser" Name="Root.Engine.Compute Value" Filename="Helper.m1scr"/>
+<Component Classname="BuiltIn.FuncUser" Name="Root.Engine.Update" Filename="Update.m1scr"/>
+</List></ComponentStream></Project></MoTeCM1BuildSession>"#,
+        )
+        .unwrap();
+        let model = crate::loader::build_model(&project, "Demo".into());
+        let expected: BTreeSet<_> = [
+            ("Root.Engine.Wheel Speed", EdgeKind::Read),
+            ("Root.Engine.Output", EdgeKind::Read),
+            ("Root.Engine.Output", EdgeKind::Write),
+            ("Root.Engine.Compute Value", EdgeKind::Call),
+        ]
+        .into_iter()
+        .map(|(to, kind)| GraphEdge {
+            from: "Root.Engine.Update".into(),
+            to: to.into(),
+            kind,
+        })
+        .collect();
+        for prefix in ["Root.Engine", "This", "Parent.Engine"] {
+            for separator in [".", " . ", " /* member trivia */ . ", "\n.\n"] {
+                let path = |name: &str| format!("{prefix}.{name}").replace('.', separator);
+                let source = format!(
+                    "{} += {}({}); Calculate.Max(1, 2);",
+                    path("Output"),
+                    path("Compute Value"),
+                    path("Wheel Speed")
+                );
+                let scripts = m1_typecheck::parsed::parse_all(&[("Update.m1scr".into(), source)]);
+                assert!(scripts[0].cst.syntax_diagnostics().is_empty());
+                assert_eq!(
+                    build_graph(&project, &scripts, &model)
+                        .edges
+                        .into_iter()
+                        .collect::<BTreeSet<_>>(),
+                    expected,
+                    "prefix={prefix:?}, separator={separator:?}"
+                );
+            }
+        }
+    }
 
     /// Collect `(path text, access)` for every top-level path in a snippet.
     fn accesses(src: &str) -> Vec<(String, Access)> {
