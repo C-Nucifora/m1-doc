@@ -10,10 +10,10 @@ use super::entries::{
     section_shows_class, section_shows_tags, tags_cell, type_cell,
 };
 use super::helpers::{
-    SourceLinker, code, emit_graph_block, format_rate, group_link, last_segment, render_breadcrumb,
-    text,
+    SourceLinker, emit_graph_block, format_rate, group_filename, last_segment, render_breadcrumb,
 };
 use crate::diagram::Diagram;
+use crate::escape::{attr_escape, md_code, md_text, url_encode_path};
 use crate::model::{DocModel, GroupDoc, ProjectGraph, SymbolDoc, SymbolDocKind};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -34,7 +34,7 @@ pub(super) fn render_group(
     let mut out = String::new();
     // Breadcrumb of ancestor links, then the page heading.
     let _ = writeln!(out, "{}\n", render_breadcrumb(&group.path));
-    let _ = writeln!(out, "# {}\n", text(&group.path));
+    let _ = writeln!(out, "# {}\n", md_text(&group.path));
     // Relationship graph first (#37): an at-a-glance picture of what this
     // group's members call and read/write, before the detailed tables.
     render_relationships(&mut out, group, graph);
@@ -45,8 +45,8 @@ pub(super) fn render_group(
             let _ = writeln!(
                 out,
                 "- [{}]({})",
-                text(last_segment(child)),
-                group_link(child)
+                md_text(last_segment(child)),
+                url_encode_path(&group_filename(child))
             );
         }
         out.push('\n');
@@ -93,7 +93,7 @@ pub(super) fn render_group(
                 String::new()
             };
             let class_cell = if show_class {
-                format!(" {} |", text(s.classname.as_deref().unwrap_or("—")))
+                format!(" {} |", md_text(s.classname.as_deref().unwrap_or("—")))
             } else {
                 String::new()
             };
@@ -107,14 +107,14 @@ pub(super) fn render_group(
                 out,
                 "| {}{}{} | {} | {} | {} | {} | {} | {} |{}{}",
                 row_anchor(s),
-                code(&s.path),
+                md_code(&s.path),
                 links.suffix(s.def_line),
                 type_cell(s, enum_anchors),
-                text(s.quantity.as_deref().unwrap_or("—")),
-                text(s.unit.as_deref().unwrap_or("—")),
-                text(base),
+                md_text(s.quantity.as_deref().unwrap_or("—")),
+                md_text(s.unit.as_deref().unwrap_or("—")),
+                md_text(base),
                 format_rate(s.log_rate_hz),
-                text(s.security.as_deref().unwrap_or("—")),
+                md_text(s.security.as_deref().unwrap_or("—")),
                 tags_col,
                 class_cell,
             );
@@ -166,7 +166,7 @@ pub(super) fn build_cross_refs(model: &DocModel) -> CrossRefs<'_> {
     let mut reference_loc: HashMap<&str, (String, &str)> = HashMap::new();
     let mut used_by: HashMap<&str, Vec<&str>> = HashMap::new();
     for g in &model.groups {
-        let file = group_link(&g.path);
+        let file = group_filename(&g.path);
         for s in &g.symbols {
             symbol_loc.insert(s.path.as_str(), (file.clone(), s.anchor.as_str()));
         }
@@ -190,8 +190,13 @@ pub(super) fn build_cross_refs(model: &DocModel) -> CrossRefs<'_> {
 /// `` [`label`](file#anchor) `` when the path is locatable, else plain `` `label` ``.
 fn xref_link(label: &str, loc: Option<&(String, &str)>) -> String {
     match loc {
-        Some((file, anchor)) => format!("[{}]({file}#{anchor})", code(label)),
-        None => code(label),
+        Some((file, anchor)) => format!(
+            "[{}]({}#{})",
+            md_code(label),
+            url_encode_path(file),
+            url_encode_path(anchor)
+        ),
+        None => md_code(label),
     }
 }
 
@@ -210,13 +215,13 @@ fn render_references(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs, link
         let target = match &r.target_resolved {
             Some(t) => xref_link(t, xrefs.symbol_loc.get(t.as_str())),
             None if r.target_raw.is_empty() => "—".to_string(),
-            None => code(&r.target_raw),
+            None => md_code(&r.target_raw),
         };
         let _ = writeln!(
             out,
             "| <a id=\"{}\"></a>{}{} | {} |",
-            r.anchor,
-            code(&r.path),
+            attr_escape(&r.anchor),
+            md_code(&r.path),
             links.suffix(r.def_line),
             target
         );
@@ -246,7 +251,13 @@ fn render_used_by(out: &mut String, group: &GroupDoc, xrefs: &CrossRefs) {
             .collect::<Vec<_>>()
             .join(", ");
         // The symbol is on THIS page, so a same-page fragment link suffices.
-        let _ = writeln!(out, "| [{}](#{}) | {} |", code(&s.path), s.anchor, by);
+        let _ = writeln!(
+            out,
+            "| [{}](#{}) | {} |",
+            md_code(&s.path),
+            url_encode_path(&s.anchor),
+            by
+        );
     }
     let _ = writeln!(out);
 }

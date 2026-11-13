@@ -5,10 +5,11 @@
 
 use super::RenderOptions;
 use super::helpers::{
-    ENUMS_FILE, SourceLinker, code, fmt_f64, format_annotation, format_rate, last_segment,
-    source_line, text,
+    ENUMS_FILE, SourceLinker, fmt_f64, format_annotation, format_rate, last_segment, source_line,
 };
-use crate::escape::html_escape_into;
+use crate::escape::{
+    attr_escape, code_fence, escape_json_string, md_code, md_text, url_encode_path,
+};
 use crate::model::{CanMessageDoc, FunctionDoc, ObjectDoc, SymbolDoc, SymbolDocKind, TableDoc};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -21,8 +22,8 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
     let mut out = String::new();
     // Explicit, deterministic anchor (our scheme — not pulldown-cmark's
     // incidental heading slug) so `<group>.md#<anchor>` is stable.
-    let _ = writeln!(out, "<a id=\"{}\"></a>\n", f.anchor);
-    let _ = writeln!(out, "### {}\n", text(&f.path));
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", attr_escape(&f.anchor));
+    let _ = writeln!(out, "### {}\n", md_text(&f.path));
     let _ = writeln!(out, "**Call rate:** {}\n", format_rate(f.call_rate_hz));
     if let Some(src) = &f.source_path {
         let _ = writeln!(out, "{}", source_line(src, opts.source_base.as_deref()));
@@ -31,17 +32,17 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
         let _ = writeln!(out, "(no inputs)\n");
     } else {
         for (name, ty) in &f.inputs {
-            let _ = writeln!(out, "- {}: {}", text(name), text(ty));
+            let _ = writeln!(out, "- {}: {}", md_text(name), md_text(ty));
         }
         out.push('\n');
     }
     if let Some(rt) = &f.return_type {
-        let _ = writeln!(out, "**Returns:** {}\n", text(rt));
+        let _ = writeln!(out, "**Returns:** {}\n", md_text(rt));
     }
     if !f.annotations.is_empty() {
         let _ = writeln!(out, "**Annotations:**\n");
         for ann in &f.annotations {
-            let _ = writeln!(out, "- {}", text(&format_annotation(ann)));
+            let _ = writeln!(out, "- {}", md_text(&format_annotation(ann)));
         }
         out.push('\n');
     }
@@ -52,20 +53,7 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
         && let Some(body) = &f.source_text
     {
         let body = body.trim_end();
-        // Escalate the fence past the longest backtick run inside the body so an
-        // embedded ``` (block comment, string literal, commented-out docs) can't
-        // close the code block early and leak the rest of the script as markup.
-        let longest_run = body
-            .bytes()
-            .fold((0usize, 0usize), |(cur, mx), b| {
-                if b == b'`' {
-                    (cur + 1, mx.max(cur + 1))
-                } else {
-                    (0, mx)
-                }
-            })
-            .1;
-        let fence = "`".repeat(longest_run.max(2) + 1);
+        let fence = code_fence(body);
         let _ = writeln!(out, "<details><summary>Source</summary>\n");
         let _ = writeln!(out, "{fence}m1\n{body}\n{fence}\n");
         let _ = writeln!(out, "</details>\n");
@@ -78,8 +66,13 @@ pub(super) fn render_function(f: &FunctionDoc, opts: &RenderOptions) -> String {
 /// shape is unknown (no `.m1cfg` loaded), say so rather than dropping the table.
 pub(super) fn render_table(t: &TableDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "<a id=\"{}\"></a>\n", t.anchor);
-    let _ = writeln!(out, "### {}{}\n", text(&t.path), links.suffix(t.def_line));
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", attr_escape(&t.anchor));
+    let _ = writeln!(
+        out,
+        "### {}{}\n",
+        md_text(&t.path),
+        links.suffix(t.def_line)
+    );
     if t.axes.is_empty() {
         let _ = writeln!(out, "Table — shape requires a loaded `.m1cfg`\n");
     } else {
@@ -87,12 +80,12 @@ pub(super) fn render_table(t: &TableDoc, links: &SourceLinker) -> String {
             .axes
             .iter()
             .map(|a| match &a.unit {
-                Some(u) => format!("{} ({})", a.size, text(u)),
+                Some(u) => format!("{} ({})", a.size, md_text(u)),
                 None => a.size.to_string(),
             })
             .collect::<Vec<_>>()
             .join(" × ");
-        let output = text(t.output_unit.as_deref().unwrap_or("—"));
+        let output = md_text(t.output_unit.as_deref().unwrap_or("—"));
         let _ = writeln!(out, "{}-D table — {axes} → {output}\n", t.axes.len());
     }
     out
@@ -129,19 +122,25 @@ pub(super) fn section_shows_tags(rows: &[&SymbolDoc]) -> bool {
 /// `data-` attributes so the HTML filter can show/hide the row by level or tag
 /// (#34). The element is raw HTML that pulldown-cmark passes through verbatim
 /// into the `<td>`, so the metadata reaches the rendered table without a
-/// separate data channel. Tags are space-joined; an empty level/tag set is
+/// separate data channel. Tags are a JSON array; an empty level/tag set is
 /// simply absent. The `class="m1-row-anchor"` lets the filter JS find the row.
 pub(super) fn row_anchor(s: &SymbolDoc) -> String {
-    let mut attrs = format!(" id=\"{}\" class=\"m1-row-anchor\"", s.anchor);
+    let mut attrs = format!(" id=\"{}\" class=\"m1-row-anchor\"", attr_escape(&s.anchor));
     if let Some(sec) = &s.security {
-        attrs.push_str(" data-security=\"");
-        html_escape_into(&mut attrs, sec, true);
-        attrs.push('"');
+        attrs.push_str(&format!(" data-security=\"{}\"", attr_escape(sec)));
     }
     if !s.tags.is_empty() {
-        attrs.push_str(" data-tags=\"");
-        html_escape_into(&mut attrs, &s.tags.join(" "), true);
-        attrs.push('"');
+        attrs.push_str(&format!(
+            " data-tags=\"{}\"",
+            attr_escape(&format!(
+                "[{}]",
+                s.tags
+                    .iter()
+                    .map(|tag| escape_json_string(tag, false))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        ));
     }
     format!("<a{attrs}></a>")
 }
@@ -151,7 +150,11 @@ pub(super) fn tags_cell(s: &SymbolDoc) -> String {
     if s.tags.is_empty() {
         "—".to_string()
     } else {
-        s.tags.iter().map(|t| code(t)).collect::<Vec<_>>().join(" ")
+        s.tags
+            .iter()
+            .map(|t| md_code(t))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -173,19 +176,24 @@ fn scale_cell(s: &crate::model::CanSignalDoc) -> String {
 /// and a bullet list of its immediate members (#28).
 pub(super) fn render_object(o: &ObjectDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "<a id=\"{}\"></a>\n", o.anchor);
-    let _ = writeln!(out, "### {}{}\n", text(&o.path), links.suffix(o.def_line));
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", attr_escape(&o.anchor));
+    let _ = writeln!(
+        out,
+        "### {}{}\n",
+        md_text(&o.path),
+        links.suffix(o.def_line)
+    );
     let _ = writeln!(
         out,
         "**Class:** {}\n",
-        text(o.class.as_deref().unwrap_or("—"))
+        md_text(o.class.as_deref().unwrap_or("—"))
     );
     if o.members.is_empty() {
         let _ = writeln!(out, "(no members)\n");
     } else {
         let _ = writeln!(out, "**Members:**\n");
         for m in &o.members {
-            let _ = writeln!(out, "- {}", code(m));
+            let _ = writeln!(out, "- {}", md_code(m));
         }
         out.push('\n');
     }
@@ -197,7 +205,7 @@ pub(super) fn render_object(o: &ObjectDoc, links: &SourceLinker) -> String {
 /// A message with no signals is still listed (degrade, never drop) (#28).
 pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "<a id=\"{}\"></a>\n", m.anchor);
+    let _ = writeln!(out, "<a id=\"{}\"></a>\n", attr_escape(&m.anchor));
     let id = match m.can_id {
         Some(id) => format!("0x{id:X}"),
         None => "—".to_string(),
@@ -209,7 +217,7 @@ pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> Str
     let _ = writeln!(
         out,
         "### {} (id {id}, dlc {dlc}){}\n",
-        text(&m.path),
+        md_text(&m.path),
         links.suffix(m.def_line)
     );
     if m.signals.is_empty() {
@@ -231,12 +239,12 @@ pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> Str
         let _ = writeln!(
             out,
             "| <a id=\"{}\"></a>{} | {} | {} | {} | {} |",
-            s.anchor,
-            code(last_segment(&s.path)),
+            attr_escape(&s.anchor),
+            md_code(last_segment(&s.path)),
             bits,
             scale_cell(s),
             range,
-            text(s.unit.as_deref().unwrap_or("—")),
+            md_text(s.unit.as_deref().unwrap_or("—")),
         );
     }
     out.push('\n');
@@ -248,9 +256,13 @@ pub(super) fn render_can_message(m: &CanMessageDoc, links: &SourceLinker) -> Str
 pub(super) fn type_cell(s: &SymbolDoc, enum_anchors: &HashMap<&str, &str>) -> String {
     match &s.enum_ref {
         Some(name) => match enum_anchors.get(name.as_str()) {
-            Some(anchor) => format!("[{}]({ENUMS_FILE}#{anchor})", text(&s.type_label)),
-            None => text(&s.type_label),
+            Some(anchor) => format!(
+                "[{}]({ENUMS_FILE}#{})",
+                md_text(&s.type_label),
+                url_encode_path(anchor)
+            ),
+            None => md_text(&s.type_label),
         },
-        None => text(&s.type_label),
+        None => md_text(&s.type_label),
     }
 }

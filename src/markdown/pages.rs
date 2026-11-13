@@ -3,11 +3,10 @@
 //! pages, the project-wide Enums reference, and the focused `--graph <group>`
 //! subsystem page.
 
-use super::helpers::{
-    ENUMS_FILE, code, emit_graph_block, graph_page_filename, group_link, tag_filename, text,
-};
+use super::helpers::{ENUMS_FILE, emit_graph_block, graph_page_filename, group_filename};
 use super::{GraphSpec, RenderOptions};
 use crate::diagram::Diagram;
+use crate::escape::{attr_escape, md_code, md_text, url_encode_path};
 use crate::model::{DocModel, EnumDoc};
 use std::fmt::Write as _;
 
@@ -44,15 +43,19 @@ fn stats_line(model: &DocModel) -> String {
     parts.join(" · ")
 }
 
-pub(super) fn render_index(model: &DocModel, opts: &RenderOptions) -> String {
+pub(super) fn render_index(
+    model: &DocModel,
+    opts: &RenderOptions,
+    tag_files: &std::collections::BTreeMap<String, String>,
+) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# {}\n", text(&model.title));
+    let _ = writeln!(out, "# {}\n", md_text(&model.title));
 
     // Target hardware: degrade-never-fake. The project API does not expose it
     // yet (#32), so we say so explicitly rather than invent a value.
     match &model.target_hardware {
         Some(hw) => {
-            let _ = writeln!(out, "**Target hardware:** {}\n", text(hw));
+            let _ = writeln!(out, "**Target hardware:** {}\n", md_text(hw));
         }
         None => {
             let _ = writeln!(
@@ -75,8 +78,8 @@ pub(super) fn render_index(model: &DocModel, opts: &RenderOptions) -> String {
         let _ = writeln!(
             out,
             "- [{}]({}) ({}){suffix}",
-            text(&node.path),
-            group_link(&node.path),
+            md_text(&node.path),
+            url_encode_path(&group_filename(&node.path)),
             node.subtree_count,
         );
     }
@@ -92,7 +95,7 @@ pub(super) fn render_index(model: &DocModel, opts: &RenderOptions) -> String {
             "Access level required to view or calibrate a value. Levels present in this project:\n"
         );
         for level in &levels {
-            let _ = writeln!(out, "- **{}** — {}", text(level), security_gloss(level));
+            let _ = writeln!(out, "- **{}** — {}", md_text(level), security_gloss(level));
         }
         out.push('\n');
     }
@@ -102,7 +105,7 @@ pub(super) fn render_index(model: &DocModel, opts: &RenderOptions) -> String {
     if !tags.is_empty() {
         let _ = writeln!(out, "## Tags\n");
         for tag in &tags {
-            let _ = writeln!(out, "- [{}]({})", text(tag), tag_filename(tag));
+            let _ = writeln!(out, "- [{}]({})", md_text(tag), tag_files[tag]);
         }
         out.push('\n');
     }
@@ -113,7 +116,7 @@ pub(super) fn render_index(model: &DocModel, opts: &RenderOptions) -> String {
         let _ = writeln!(
             out,
             "- [Subsystem: {}]({})",
-            text(&spec.group),
+            md_text(&spec.group),
             graph_page_filename(&spec.group)
         );
         out.push('\n');
@@ -146,7 +149,7 @@ fn security_gloss(level: &str) -> &'static str {
 pub(super) fn render_tag_index(model: &DocModel, tag: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "[Index](index.md)\n");
-    let _ = writeln!(out, "# Tag: {}\n", text(tag));
+    let _ = writeln!(out, "# Tag: {}\n", md_text(tag));
     let mut any = false;
     for g in &model.groups {
         for s in &g.symbols {
@@ -155,9 +158,9 @@ pub(super) fn render_tag_index(model: &DocModel, tag: &str) -> String {
                 let _ = writeln!(
                     out,
                     "- [{}]({}#{})",
-                    text(&s.path),
-                    group_link(&g.path),
-                    s.anchor,
+                    md_text(&s.path),
+                    url_encode_path(&group_filename(&g.path)),
+                    url_encode_path(&s.anchor),
                 );
             }
         }
@@ -175,16 +178,16 @@ pub(super) fn render_enums(enums: &[EnumDoc]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# Enums\n");
     for e in enums {
-        let _ = writeln!(out, "<a id=\"{}\"></a>\n", e.anchor);
-        let default = text(e.default.as_deref().unwrap_or("—"));
+        let _ = writeln!(out, "<a id=\"{}\"></a>\n", attr_escape(&e.anchor));
+        let default = md_text(e.default.as_deref().unwrap_or("—"));
         if e.open {
             let _ = writeln!(
                 out,
                 "## {} (open — firmware-supplied, members may be partial; default: {default})\n",
-                text(&e.name)
+                md_text(&e.name)
             );
         } else {
-            let _ = writeln!(out, "## {} (default: {default})\n", text(&e.name));
+            let _ = writeln!(out, "## {} (default: {default})\n", md_text(&e.name));
         }
         if e.members.is_empty() {
             let _ = writeln!(out, "(no enumerators available)\n");
@@ -198,7 +201,7 @@ pub(super) fn render_enums(enums: &[EnumDoc]) -> String {
                 } else {
                     ""
                 };
-                let _ = writeln!(out, "- {} = {}{default}", m.value, text(&m.name));
+                let _ = writeln!(out, "- {} = {}{default}", m.value, md_text(&m.name));
             }
             out.push('\n');
         }
@@ -212,20 +215,20 @@ pub(super) fn render_enums(enums: &[EnumDoc]) -> String {
 pub(super) fn render_graph_page(model: &DocModel, spec: &GraphSpec) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "[Index](index.md)\n");
-    let _ = writeln!(out, "# Subsystem: {}\n", text(&spec.group));
+    let _ = writeln!(out, "# Subsystem: {}\n", md_text(&spec.group));
     let diagram = Diagram::subsystem(&model.graph, &spec.group, spec.depth);
     if diagram.is_empty() {
         let _ = writeln!(
             out,
             "No documented relationships under {}.",
-            code(&spec.group)
+            md_code(&spec.group)
         );
         return out;
     }
     let _ = writeln!(
         out,
         "Calls and data flow under {} (depth {}).\n",
-        code(&spec.group),
+        md_code(&spec.group),
         spec.depth
     );
     emit_graph_block(&mut out, "subtree", &spec.group, spec.depth, &diagram);

@@ -22,9 +22,21 @@ carrying a tag. Combine them to intersect. A scoped run is symbol-centric — it
 documents the matching channels/parameters/constants (and the group tree that
 holds them) and omits functions, tables, objects and CAN, so you can produce, for
 example, a calibration-focused subset for a given access level.
+Scoped runs require an empty output directory. Use a new `--out` path when
+changing scope so pages from an earlier full run cannot remain in the subset.
+Generated filenames must be single path components. Unsafe names and ASCII
+case collisions fail before any output is replaced. Existing output symlinks
+are rejected. Unicode filename equivalence across filesystems is unverified.
+Tags with colliding slugs receive distinct numbered page names; ordinary tag
+page names stay unchanged.
 
-The HTML site is a single, dependency-free bundle (inline CSS/JS, no CDN, works
-from `file://` and GitHub Pages): a project overview landing page (stats, target
+Metadata is rendered as literal text, including Markdown punctuation and HTML.
+Inline fields display line breaks as spaces; the model and JSON retain the raw
+values. Embedded script bodies remain code blocks.
+
+The HTML site is a directory bundle with inline CSS/JS and a shared
+`search-index.js`. Keep that file beside the pages when copying the site. It
+uses no CDN and works from `file://` and GitHub Pages. It includes a project overview landing page (stats, target
 hardware, group tree), a collapsible nav tree with an in-page table of contents
 and hover permalinks, a responsive layout with dark mode, client-side search over
 every symbol/function/table/enum, a security legend, and live filtering of rows
@@ -100,3 +112,9 @@ Copy [`examples/docs.yml`](examples/docs.yml) into your M1 project repo as
 publish it to GitHub Pages — an always-current reference of your vehicle code.
 
 Part of the M1 toolchain — see https://github.com/C-Nucifora/m1-tools.
+
+## Development checks
+
+Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and
+`cargo fmt --all -- --check`. The HTML filter tests run with
+`node --test tests/filters.mjs`, using Node.js 22 or newer.

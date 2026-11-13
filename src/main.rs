@@ -6,6 +6,7 @@ mod json;
 mod loader;
 mod markdown;
 mod model;
+mod output;
 
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -175,13 +176,9 @@ fn main() {
             .map(str::to_string)
             .collect()
     });
-    if only_security.is_some() || args.only_tag.is_some() {
+    let scoped = only_security.is_some() || args.only_tag.is_some();
+    if scoped {
         model.retain_scoped(only_security.as_deref(), args.only_tag.as_deref());
-    }
-
-    if let Err(e) = std::fs::create_dir_all(&args.out) {
-        eprintln!("m1-doc: {}: {e}", args.out.display());
-        process::exit(1);
     }
 
     // Build Markdown files once; HTML renderer consumes them. Function source
@@ -196,21 +193,13 @@ fn main() {
     };
     let md_files = markdown::render_with(&model, &render_opts);
 
-    /// Write a single [`markdown::RenderedFile`] under `out`, exiting on error.
-    fn write_file(out: &std::path::Path, file: &markdown::RenderedFile) {
-        let path = out.join(&file.path);
-        if let Err(e) = std::fs::write(&path, &file.body) {
-            eprintln!("m1-doc: {}: {e}", path.display());
-            std::process::exit(1);
-        }
-    }
-
     let files = match args.format {
         Format::Markdown => md_files,
         Format::Html => html::render(&md_files, &model),
         Format::Both => {
+            let html_files = html::render(&md_files, &model);
             let mut files = md_files;
-            files.extend(html::render(&files, &model));
+            files.extend(html_files);
             files
         }
         Format::Json => vec![markdown::RenderedFile {
@@ -218,20 +207,9 @@ fn main() {
             body: json::render(&model),
         }],
     };
-    let mut names = std::collections::BTreeSet::new();
-    for file in &files {
-        let mut components = std::path::Path::new(&file.path).components();
-        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-            || components.next().is_some()
-            || file.path.contains(['/', '\\'])
-            || !names.insert(&file.path)
-        {
-            eprintln!("m1-doc: unsafe or duplicate output filename: {}", file.path);
-            process::exit(1);
-        }
-    }
-    for file in &files {
-        write_file(&args.out, file);
+    if let Err(error) = output::write(&args.out, &files, scoped) {
+        eprintln!("m1-doc: {}: {error}", args.out.display());
+        process::exit(1);
     }
 }
 

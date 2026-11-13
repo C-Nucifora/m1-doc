@@ -5,38 +5,9 @@
 //! ([`super::group`], [`super::pages`]) compose them.
 
 use crate::diagram::Diagram;
+use crate::escape::{code_fence, md_code, md_destination, md_text, url_encode_path};
 use crate::model::AnnotationDoc;
 use std::fmt::Write as _;
-
-/// Keep project metadata literal in Markdown text, labels and table cells.
-pub(super) fn text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\\' | '[' | ']' | '*' | '_' | '`' | '|' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            '\n' | '\r' => out.push(' '),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// Inline code uses a longer delimiter when metadata itself contains backticks.
-pub(super) fn code(value: &str) -> String {
-    let value = value.replace('|', "\\|").replace(['\n', '\r'], " ");
-    if !value.contains('`') {
-        return format!("`{value}`");
-    }
-    let longest = value.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-    let fence = "`".repeat(longest + 1);
-    format!("{fence} {value} {fence}")
-}
 
 /// The filename of the project-wide Enums reference page.
 pub(super) const ENUMS_FILE: &str = "enums.md";
@@ -45,11 +16,6 @@ pub(super) const ENUMS_FILE: &str = "enums.md";
 /// full group path, so every node in the tree has a distinct page).
 pub(super) fn group_filename(group_path: &str) -> String {
     format!("{group_path}.md")
-}
-
-/// URL target for a group page, preserving the on-disk filename separately.
-pub(super) fn group_link(group_path: &str) -> String {
-    url_encode_path(&group_filename(group_path))
 }
 
 /// The leaf segment of a dotted path (`Root.Engine.Fuel` -> `Fuel`) — the label
@@ -70,9 +36,13 @@ pub(super) fn render_breadcrumb(path: &str) -> String {
         }
         cumulative.push_str(seg);
         if i + 1 < segs.len() {
-            crumbs.push(format!("[{}]({})", text(seg), group_link(&cumulative)));
+            crumbs.push(format!(
+                "[{}]({})",
+                md_text(seg),
+                url_encode_path(&group_filename(&cumulative))
+            ));
         } else {
-            crumbs.push(text(seg));
+            crumbs.push(md_text(seg));
         }
     }
     crumbs.join(" › ")
@@ -101,8 +71,6 @@ pub(crate) fn format_rate(hz: Option<f64>) -> String {
     }
 }
 
-pub(super) use crate::escape::url_encode_path;
-
 /// Build a function's Source line. With a `source_base` the path becomes an
 /// external link (`{base}/{path}`); without one it is shown verbatim so the
 /// reader still sees which `.m1scr` implements the function (#30).
@@ -111,12 +79,12 @@ pub(super) fn source_line(path: &str, base: Option<&str>) -> String {
         Some(b) => {
             let b = b.trim_end_matches('/');
             format!(
-                "**Source:** [{}]({b}/{})\n",
-                text(path),
-                url_encode_path(path)
+                "**Source:** [{}]({})\n",
+                md_text(path),
+                md_destination(&format!("{b}/{}", url_encode_path(path)))
             )
         }
-        None => format!("**Source:** {}\n", code(path)),
+        None => format!("**Source:** {}\n", md_code(path)),
     }
 }
 
@@ -144,9 +112,12 @@ impl<'a> SourceLinker<'a> {
         let path = self.m1prj_path?;
         let line = def_line?;
         Some(format!(
-            "[src]({base}/{}#L{})",
-            url_encode_path(path),
-            line + 1
+            "[src]({})",
+            md_destination(&format!(
+                "{base}/{}#L{}",
+                url_encode_path(path),
+                u64::from(line) + 1
+            ))
         ))
     }
 
@@ -196,10 +167,14 @@ pub(super) fn emit_graph_block(
     depth: usize,
     diagram: &Diagram,
 ) {
-    let mut escaped_group = String::new();
-    crate::escape::html_escape_into(&mut escaped_group, group, false);
-    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{escaped_group}-->\n");
-    let _ = writeln!(out, "```mermaid");
-    out.push_str(&diagram.to_mermaid());
-    let _ = writeln!(out, "```\n");
+    let mut payload = String::new();
+    for byte in group.as_bytes() {
+        let _ = write!(payload, "{byte:02x}");
+    }
+    let _ = writeln!(out, "<!--m1-graph:{mode}:{depth}:{payload}-->\n");
+    let body = diagram.to_mermaid();
+    let fence = code_fence(&body);
+    let _ = writeln!(out, "{fence}mermaid");
+    out.push_str(&body);
+    let _ = writeln!(out, "{fence}\n");
 }

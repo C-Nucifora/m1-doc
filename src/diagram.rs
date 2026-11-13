@@ -289,7 +289,18 @@ fn short_label(path: &str) -> String {
 
 /// Escape a label for a Mermaid quoted node label (`"…"`).
 fn mermaid_label(s: &str) -> String {
-    s.replace('"', "&quot;")
+    // Mermaid's documented decimal entities keep quoted labels as data.
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' | '<' | '>' | '"' | '`' | '#' | '\\' => {
+                let _ = write!(out, "#{};", ch as u32);
+            }
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Encode a string as a JSON string literal (quoted, with the control/quote

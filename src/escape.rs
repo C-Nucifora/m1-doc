@@ -1,19 +1,4 @@
-//! A single JSON-string escaper shared by every emitter in the crate.
-//!
-//! Three near-identical hand-rolled escapers used to live in `diagram.rs`,
-//! `html.rs` and `json.rs`. They all escaped the same JSON control set; the two
-//! that emit JSON inside an inline `<script>` additionally hardened `<`/`>`/`/`
-//! so the payload can never close the embedding element early. Keeping three
-//! copies meant a hardening fix to one could silently drift from the others, so
-//! they are consolidated here.
-//!
-//! [`escape_json_into`] is the one implementation. `script_safe` selects whether
-//! the script-close hardening is applied:
-//!
-//! * `script_safe == false` — a spec-conformant JSON string literal (used by
-//!   the standalone `index.json` writer).
-//! * `script_safe == true` — additionally escapes `<` `>` `/` so the result is
-//!   safe to embed verbatim inside an inline `<script>` block.
+//! Context-specific escaping shared by the output renderers.
 
 use std::fmt::Write as _;
 
@@ -64,19 +49,6 @@ pub(crate) fn escape_json_string(s: &str, script_safe: bool) -> String {
     out
 }
 
-/// Append HTML text, escaping quotes too for double-quoted attributes.
-pub(crate) fn html_escape_into(out: &mut String, s: &str, attr: bool) {
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' if attr => out.push_str("&quot;"),
-            c => out.push(c),
-        }
-    }
-}
-
 /// Percent-encode a project-relative path for use as a URL target, preserving
 /// the `/` segment separators. M1 object names may contain spaces (Development
 /// Manual, *Naming Objects*: "Space may be used between two name constituents"),
@@ -111,9 +83,199 @@ pub(crate) fn url_encode_path(path: &str) -> String {
     out
 }
 
+/// HTML text and quoted attributes; attribute escapes also keep Markdown tables intact.
+pub(crate) fn html_escape_into(out: &mut String, s: &str, attr: bool) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if attr => out.push_str("&quot;"),
+            '|' if attr => out.push_str("&#124;"),
+            '\r' if attr => out.push_str("&#13;"),
+            '\n' if attr => out.push_str("&#10;"),
+            '\t' if attr => out.push_str("&#9;"),
+            c => out.push(c),
+        }
+    }
+}
+
+pub(crate) fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    html_escape_into(&mut out, s, false);
+    out
+}
+
+pub(crate) fn attr_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    html_escape_into(&mut out, s, true);
+    out
+}
+
+/// Metadata occupies one inline field; preserve its raw form in the model/JSON.
+fn single_line(s: &str) -> String {
+    s.replace("\r\n", " ").replace(['\r', '\n'], " ")
+}
+
+/// Literal Markdown text, usable in headings, link labels and table cells.
+pub(crate) fn md_text(s: &str) -> String {
+    let s = single_line(s).replace('\t', " ");
+    let leading = s.len() - s.trim_start_matches(' ').len();
+    let trailing = s.trim_end_matches(' ').len();
+    let mut out = String::with_capacity(s.len());
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            ' ' if i < leading || i >= trailing => out.push_str("&#32;"),
+            '\\' | '`' | '*' | '_' | '[' | ']' | '!' | '|' | '#' | '~' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '-' | '+' if i == 0 => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '.' | ')' if i > 0 && s[..i].bytes().all(|b| b.is_ascii_digit()) => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn longest_ticks(s: &str) -> usize {
+    s.bytes()
+        .fold((0, 0), |(run, longest), byte| {
+            if byte == b'`' {
+                (run + 1, longest.max(run + 1))
+            } else {
+                (0, longest)
+            }
+        })
+        .1
+}
+
+/// Code spans with data-sized delimiters; pipes need HTML to survive GFM tables.
+pub(crate) fn md_code(s: &str) -> String {
+    let s = single_line(s);
+    if s.is_empty() || s.contains('|') {
+        let mut out = String::from("<code>");
+        for ch in s.chars() {
+            let _ = write!(out, "&#{};", ch as u32);
+        }
+        out.push_str("</code>");
+        return out;
+    }
+    let ticks = "`".repeat(longest_ticks(&s) + 1);
+    let pad = s.starts_with('`')
+        || s.ends_with('`')
+        || s.starts_with(' ') && s.ends_with(' ') && !s.chars().all(|c| c == ' ');
+    if pad {
+        format!("{ticks} {s} {ticks}")
+    } else {
+        format!("{ticks}{s}{ticks}")
+    }
+}
+
+pub(crate) fn code_fence(s: &str) -> String {
+    "`".repeat(longest_ticks(s).max(2) + 1)
+}
+
+/// Protect a supplied URL's Markdown destination without encoding its URL syntax.
+pub(crate) fn md_destination(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    for byte in url.bytes() {
+        match byte {
+            b'&' => out.push_str("&amp;"),
+            0..=32
+            | 127..=255
+            | b'('
+            | b')'
+            | b'<'
+            | b'>'
+            | b'"'
+            | b'\\'
+            | b'`'
+            | b'|'
+            | b'['
+            | b']' => {
+                let _ = write!(out, "%{byte:02X}");
+            }
+            _ => out.push(byte as char),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_metadata_round_trips_without_markup_or_extra_cells() {
+        use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+        let pieces = [
+            "",
+            " ",
+            "  ",
+            "`",
+            "``",
+            "|",
+            "\\",
+            "<img src=x>",
+            "&lt;",
+            "[x](https://invalid)",
+            "![x](x)",
+            "*x*",
+            "# h",
+            "1. x",
+            "- x",
+            "x\r\ny",
+            "x\ny",
+            "\t",
+            "é🦀",
+            "~x~",
+            "a  b",
+        ];
+        for left in pieces {
+            for right in pieces {
+                let raw = format!("{left}{right}");
+                for code in [false, true] {
+                    let escaped = if code { md_code(&raw) } else { md_text(&raw) };
+                    let md = format!("| Field | Other |\n| --- | --- |\n| {escaped} | keep |\n");
+                    let mut cells = Vec::new();
+                    let mut text = String::new();
+                    for event in Parser::new_ext(&md, Options::ENABLE_TABLES) {
+                        match event {
+                            Event::Start(Tag::TableCell) => text.clear(),
+                            Event::End(TagEnd::TableCell) => cells.push(text.clone()),
+                            Event::Text(s) | Event::Code(s) => text.push_str(&s),
+                            Event::InlineHtml(s)
+                                if code && matches!(s.as_ref(), "<code>" | "</code>") => {}
+                            Event::Start(Tag::Table(_) | Tag::TableHead | Tag::TableRow)
+                            | Event::End(TagEnd::Table | TagEnd::TableHead | TagEnd::TableRow) => {}
+                            other => panic!("unexpected {other:?} for {raw:?}: {md}"),
+                        }
+                    }
+                    let expected = single_line(&raw);
+                    let expected = if code {
+                        expected
+                    } else {
+                        expected.replace('\t', " ")
+                    };
+                    assert_eq!(
+                        cells,
+                        ["Field", "Other", &expected, "keep"],
+                        "code={code} input={raw:?}: {md}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn spec_escapes_control_set_but_not_script_chars() {
