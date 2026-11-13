@@ -656,6 +656,19 @@ impl DocModel {
             g.objects.clear();
             g.can_messages.clear();
         }
+        // References may only expose targets that remain in the scoped model.
+        let symbols: BTreeSet<String> = self
+            .groups
+            .iter()
+            .flat_map(|g| g.symbols.iter().map(|s| s.path.clone()))
+            .collect();
+        for g in &mut self.groups {
+            g.references.retain(|r| {
+                r.target_resolved
+                    .as_deref()
+                    .is_some_and(|target| symbols.contains(target))
+            });
+        }
         // 2. A group is kept if it has a surviving symbol, or is an ancestor of
         //    one (so the path to it stays navigable).
         let mut kept: BTreeSet<String> = self
